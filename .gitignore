@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# PyInstaller 构建产物（发行走 Releases，不入库）
+build/
+dist/
+*.manifest
+
+# 本机覆盖配置（含绝对路径，不入库）
+启动器配置.json
+
+# 临时产物
+_smoke_err.txt
+*.log

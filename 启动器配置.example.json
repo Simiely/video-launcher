@@ -1,0 +1,10 @@
+{
+  "_说明": "复制本文件为「启动器配置.json」，放在程序同目录（exe 则放 exe 旁边），只保留需要改的键即可。全部键都可省略。",
+  "comfy_dir": "C:\\AI\\ComfyUI",
+  "comfy_py": "C:\\AI\\ComfyUI\\.venv\\Scripts\\python.exe",
+  "deploy_root": "C:\\AI\\video-upscale-deploy",
+  "ffmpeg_dir": "C:\\AI\\ffmpeg\\bin",
+  "input_dir": "E:\\VideoUpscale\\input",
+  "output_dir": "E:\\VideoUpscale\\output",
+  "comfy_url": "http://127.0.0.1:8188"
+}
