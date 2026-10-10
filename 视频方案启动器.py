@@ -38,7 +38,8 @@ CONFIG = {
 _cfg_path = os.path.join(APP_DIR, "启动器配置.json")
 if os.path.exists(_cfg_path):                       # 允许用同名 JSON 覆盖默认路径
     try:
-        CONFIG.update(json.load(open(_cfg_path, encoding="utf-8")))
+        with open(_cfg_path, encoding="utf-8") as _fh:
+            CONFIG.update(json.load(_fh))
     except Exception as e:
         print("配置文件读取失败，用默认值：", e)
 
@@ -48,6 +49,7 @@ SEEDVR2_PS  = os.path.join(CONFIG["deploy_root"], "03-SeedVR2", "批量放大.ps
 NO_PROXY_OP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 PAD = {"padx": 8, "pady": 4}   # 统一内边距（模块级，页签方法里也要用）
+MAX_LOG_LINES = 2000           # 日志区保留的最大行数，超出自动裁剪（防长任务日志无限增长拖慢 UI）
 
 
 def ps_quote(s):
@@ -67,6 +69,7 @@ class App:
         self.task_proc = None           # 当前批量任务进程
         self.task_name = ""
         self._closing = False
+        self._svc_starting = False      # 启动中锁：防止就绪前连点起多个 ComfyUI 进程
 
         self._build_ui()
         self._drain_log()
@@ -206,6 +209,9 @@ class App:
                 line = self.logq.get_nowait()
                 self.txt.configure(state="normal")
                 self.txt.insert("end", line + "\n")
+                # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
+                if int(self.txt.count("1.0", "end", "lines")) > MAX_LOG_LINES:
+                    self.txt.delete("1.0", "%d.0" % (int(self.txt.count("1.0", "end", "lines")) - MAX_LOG_LINES))
                 self.txt.see("end")
                 self.txt.configure(state="disabled")
         except queue.Empty:
@@ -229,12 +235,20 @@ class App:
             return False
 
     def svc_start(self):
+        if self._svc_starting:
+            self.log("[服务] ComfyUI 正在启动中，请稍候…")
+            return
+        if self.svc_proc is not None and self.svc_proc.poll() is None:
+            self.log("[服务] ComfyUI 已在本程序运行")
+            return
         if self.comfy_alive():
             self.log("[服务] ComfyUI 已在运行，不用重复启动")
             return
         if not os.path.exists(CONFIG["comfy_py"]):
             messagebox.showerror("找不到 ComfyUI", CONFIG["comfy_py"])
             return
+        self._svc_starting = True
+        self.btn_start.configure(state="disabled")
         self.log("[服务] 正在启动 ComfyUI（首次加载约 15~60 秒）…")
         try:
             self.svc_proc = subprocess.Popen(
@@ -244,6 +258,8 @@ class App:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1)
         except Exception as e:
+            self._svc_starting = False
+            self.btn_start.configure(state="normal")
             messagebox.showerror("启动失败", repr(e))
             return
         self.btn_stop.configure(state="normal")
@@ -258,6 +274,7 @@ class App:
         except Exception:
             pass
         rc = p.wait()
+        self._svc_starting = False          # 进程退出即解除启动中锁（按钮态由 _probe_once 统一刷新）
         if not self._closing:
             self.log("[服务] ComfyUI 进程退出，rc=%s" % rc)
 
@@ -266,12 +283,15 @@ class App:
             if self._closing:
                 return
             if self.comfy_alive():
+                self._svc_starting = False
                 self.log("[服务] ✅ ComfyUI 已就绪：%s" % CONFIG["comfy_url"])
                 webbrowser.open(CONFIG["comfy_url"])
                 return
             if self.svc_proc and self.svc_proc.poll() is not None:
+                self._svc_starting = False
                 return
             time.sleep(3)
+        self._svc_starting = False
         self.log("[服务] ⚠️ 5 分钟内未就绪，请看日志排查")
 
     def svc_stop(self):
@@ -394,9 +414,11 @@ class App:
         except Exception:
             self.var_svc.set("○ 未运行")
             self._gpu_by_nvidia_smi()
-        self.btn_stop.configure(state=("normal" if self.comfy_alive() or
-                                       (self.svc_proc and self.svc_proc.poll() is None)
-                                       else "disabled"))
+        # 按钮状态：仅当自己拉起的进程仍在跑才允许「停止」；启动中/已运行则禁用「启动」
+        # （避免 ComfyUI 是外部启动时，「停止服务」被误启用却点了无效）
+        own = self.svc_proc is not None and self.svc_proc.poll() is None
+        self.btn_start.configure(state="disabled" if (self._svc_starting or alive) else "normal")
+        self.btn_stop.configure(state="normal" if own else "disabled")
 
     def _gpu_by_nvidia_smi(self):
         try:
