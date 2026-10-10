@@ -403,9 +403,11 @@ class App:
 
     def _probe_once(self):
         # 服务状态
+        alive = False
         try:
             with NO_PROXY_OP.open(CONFIG["comfy_url"] + "/system_stats", timeout=3) as r:
                 d = json.loads(r.read().decode("utf-8"))
+            alive = True
             dev = (d.get("devices") or [{}])[0]
             used = (dev.get("vram_total", 0) - dev.get("vram_free", 0)) / 2 ** 30
             tot = dev.get("vram_total", 0) / 2 ** 30
