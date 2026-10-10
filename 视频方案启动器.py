@@ -931,7 +931,7 @@ class App:
             for line in p.stdout:
                 self.log("[ComfyUI] " + line.rstrip())
         except Exception:
-            pass
+            pass          # 管道被断（进程被杀 / 句柄失效）：下面 p.wait() 会把 rc 报出来，这里不必再吵
         rc = p.wait()
         self._svc_starting = False          # 进程退出即解除启动中锁（按钮态由探测统一刷新）
         if not self._closing:
@@ -1117,18 +1117,20 @@ class App:
         if not self._nvsmi_ok:
             return ""
         try:
-            out = subprocess.run(
+            r = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.used,memory.total",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=8,
-                creationflags=NO_WINDOW).stdout
-            u, t = out.strip().splitlines()[0].split(",")
-            return "显存 %.1f/%.1fG" % (int(u) / 1024, int(t) / 1024)
-        except FileNotFoundError:
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=8, creationflags=NO_WINDOW)
+        except FileNotFoundError:              # 本机没装 → 记住，别再每 5 秒白起进程
             self._nvsmi_ok = False
             return ""
-        except Exception:
+        except Exception:                      # 超时 / 被杀：显存只是锦上添花，静默降级即可
             return ""
+        if r.returncode != 0:                  # 驱动异常时 stdout 是空的；显式判掉，不靠 IndexError 兜底
+            return ""
+        u, t = r.stdout.strip().splitlines()[0].split(",")
+        return "显存 %.1f/%.1fG" % (int(u) / 1024, int(t) / 1024)
 
     # ================================================================ 退出
     def on_close(self):
@@ -1141,13 +1143,13 @@ class App:
             try:
                 self.task_proc.terminate()
             except Exception:
-                pass
+                pass      # 正在退出：进程可能已经自己结束了。此时弹窗/写日志都没意义，静默是正确选择
         if self.svc_proc and self.svc_proc.poll() is None:
             if messagebox.askyesno("关闭服务", "要一并关闭 ComfyUI 服务吗？"):
                 try:
                     self.svc_proc.terminate()
                 except Exception:
-                    pass
+                    pass  # 同上：退出路径上不作补救，避免"退出时报错"比问题本身更烦人
         self.root.destroy()
 
 

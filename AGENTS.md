@@ -19,6 +19,8 @@
 - **windowed 程序没有 stderr，异常必须落盘**（v1.2.5）：`main()` 里先 `install_crash_log()`、建 root 后 `watch_tk_errors(root)`，未捕获异常统一写同目录 `崩溃日志.log`。没有它，"闪退"是零信息问题。
 - **长任务不许同步等**：SeedVR2 单条 20+ 分钟。用子进程 + 线程读 stdout + `queue` + `root.after(150)` 刷新，UI 不能阻塞。
 - **后台线程绝不碰控件**：tkinter 非线程安全。线程里**只能**写 `logq` / `uiqueue`，`root.after` 与控件调用一律留给主线程（v1.2.0 曾因此抛 `main thread is not in main loop`）。
+- **静默吞异常必须写明理由**（v1.2.7）：`except Exception: pass` 本身可以是正确选择（退出路径、非关键信息降级），但**不许不写注释**。且优先"显式判掉正常失败"（`returncode != 0`、`read() is None`）而不是靠后续 `IndexError` 兜住 —— 后者让"预期失败"变成"意外异常"，行为测试里有一条逐行扫裸 `pass` 的守卫。
+- **每个子进程的参数口径统一**（v1.2.7）：`text=True` 一律配 `encoding="utf-8", errors="replace"`，`creationflags=NO_WINDOW` 必带。缺 `errors` 会让非 UTF-8 输出变成 `UnicodeDecodeError`，看着"降级正常"其实过程不可控。
 - **主线程心跳要 `try/finally`**（v1.2.5）：`_drain_log` 的 `root.after` 重排程必须在 `finally` 里；否则任一回调抛异常就会让刷新**永久停摆**（v1.1.2 同类静默故障）。
 - **进日志区的行必须先 `strip_ansi()`**（v1.2.6）：ComfyUI 新版给每条日志**无条件**加 ANSI 颜色码（连 `isatty` 都不判断），重定向到管道照样吐 `ESC[1mESC[32m[INFO]ESC[0m`；Tk 的 `Text` 不解析转义序列，会把它显示成方块 —— 每行都是乱码。**任何新增的日志来源（新的子进程、新的文件读取）都要过这一道**。
 - **只有本程序 spawn 的进程才有日志可读**（v1.2.6）：接日志靠的是"我持有的管道"，不是"服务在跑"。外部已启动的 ComfyUI 输出绑在别的终端上，本程序没有句柄 —— 日志区不会出现 `[ComfyUI]` 行，这不是 bug。别为了"显示外部服务的日志"去猜实现。
