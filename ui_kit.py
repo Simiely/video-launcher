@@ -504,7 +504,8 @@ def enable_dpi_awareness():
             import ctypes
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
-            pass
+            pass      # 两种 API 都不可用（非 Windows / 老系统）：DPI 感知只是"更清晰"，
+                      # 拿不到就用系统默认缩放，绝不能让启动失败在这里
 
 
 def pick_font():
@@ -529,7 +530,8 @@ def init_scaling(root):
     try:
         root.tk.call("tk", "scaling", root.winfo_fpixels("1i") / 72.0)
     except Exception:
-        pass
+        pass      # 个别 Tk 构建/主题里这条调用会失败。字号本身靠磅值交给 Tk 缩放，
+                  # 拿不到 scaling 只是比例略不准，不值得为它中断启动
     UIFONT = pick_font()
     try:
         MONOFONT = "Consolas" if "Consolas" in set(tkfont.families()) else "Courier New"
