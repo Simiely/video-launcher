@@ -100,7 +100,25 @@ main()
 - 解决：`_drain_log` 在插入后若行数超过 `MAX_LOG_LINES = 2000` 就 `delete` 最旧的行（模块级常量，便于调）。
 - 预防：任何会高频追加的文本控件都要设上限或环形缓冲，不能无脑 append。
 
+### 问题：Tk `Text.count()` 返回 tuple，`int()` 会炸
+
+**TL;DR**：不要用 `int(text.count("1.0","end","lines"))` 统计行数——`Text.count()` 返回的是 tuple；用自维护计数器替代。
+
+- 问题：v1.1.0 的日志裁剪 `int(self.txt.count(...))` 一插入日志就抛 `TypeError`（`int() argument must be ... not 'tuple'`）
+- 根因：Tk `Text.count()` 的返回值不是 int（本机实测为 tuple），`int()` 转换失败；异常在 `root.after` 回调里未被捕获，导致 `_drain_log` 不再重排程、日志刷新停摆
+- 解决：改用 `self._log_lines` 自维护计数器，超 `MAX_LOG_LINES` 时 `delete("1.0","2.0")` 删最旧一行
+- 预防：**只靠 pylint 静态检查抓不到这类运行期 API 契约错误**——必须补运行期冒烟（实跑源码/exe）。两类检查互补，缺一不可
+
+### 问题：审计必须"静态 + 运行期"双轨
+
+**TL;DR**：v1.1.0 一次改动引入两个 bug，分别由两类手段抓到。
+
+- `_probe_once` 未定义变量 `alive` → 由 **pylint `E0602`**（静态）抓到
+- `_drain_log` 的 `Text.count()` tuple 陷阱 → 由**运行期冒烟**（`python 视频方案启动器.py` 实跑观察 stderr）抓到
+- 预防：代码改动后，静态（pylint/radon/vulture）+ 运行期（冒烟/行为探针）都要跑；见工作区审计脚本四件套
+
 ## 文档基线
 
+- 2026-10-10：静态审计（radon/pylint/vulture）+ 运行期冒烟，修 v1.1.0 两个 P0（`alive` 未定义 / `Text.count` tuple 陷阱），新增本两篇问题记录
 - 2026-10-10（`755c05a`）：稳定性+性能加固，新增启动中锁 / 按钮态统一 / 日志裁剪两篇问题记录
 - 2026-10-09：建立四件套（README / AGENTS / DEVELOPMENT / CHANGELOG）

@@ -70,6 +70,7 @@ class App:
         self.task_name = ""
         self._closing = False
         self._svc_starting = False      # 启动中锁：防止就绪前连点起多个 ComfyUI 进程
+        self._log_lines = 0             # 日志区当前行数（自维护，用于裁剪，不依赖 Text.count）
 
         self._build_ui()
         self._drain_log()
@@ -210,8 +211,11 @@ class App:
                 self.txt.configure(state="normal")
                 self.txt.insert("end", line + "\n")
                 # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
-                if int(self.txt.count("1.0", "end", "lines")) > MAX_LOG_LINES:
-                    self.txt.delete("1.0", "%d.0" % (int(self.txt.count("1.0", "end", "lines")) - MAX_LOG_LINES))
+                # 注意：Text.count() 返回 tuple，不能 int()；故用自维护计数器
+                self._log_lines += 1
+                if self._log_lines > MAX_LOG_LINES:
+                    self.txt.delete("1.0", "2.0")
+                    self._log_lines -= 1
                 self.txt.see("end")
                 self.txt.configure(state="disabled")
         except queue.Empty:
