@@ -3,14 +3,16 @@
 
 单独成模块的原因很具体：
   * AGENTS 的硬约定是「单文件逻辑行超过 1000 就拆」—— 主文件加上 v1.2.5 的
-    崩溃落盘与上排高度自适配后到了 1000 出头，必须拆；
-  * 这里的三样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON）跟 tkinter
-    毫无关系：塞进 ui_kit 会污染"自绘控件库"的职责，留在主文件又挤占业务装配的位置。
+    崩溃落盘、上排高度自适配，以及 v1.2.6 的日志清洗后到了 1000 出头，必须拆；
+  * 这里的四样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON / 日志行解析）
+    跟 tkinter 毫无关系：塞进 ui_kit 会污染"自绘控件库"的职责，
+    留在主文件又挤占业务装配的位置。
 
 依赖单向：本模块只用标准库，**不 import 业务代码，也不 import ui_kit**。
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -62,6 +64,90 @@ def http_post_json(url, obj, timeout=10):
         return None
     except Exception as e:
         return repr(e)
+
+
+# ================================================================ 日志文本清洗
+# ComfyUI 新版（app/logger.py 的 ColoredFormatter）会**无条件**给每条日志加 ANSI
+# 颜色码 —— 不做 isatty 判断，所以即使 stdout 被重定向到管道也照样吐 ESC 序列：
+#     ESC[1mESC[32m[INFO]ESC[0m Total VRAM 24564 MB
+# Tk 的 Text 不解析转义序列，会把 ESC 显示成一个方块 —— 整行看着像乱码。
+# 入日志区前统一剥掉（保留 [INFO]/[WARNING]/[ERROR] 这些纯文本级别标记，
+# 主程序还会用它们给日志上色）。
+# 实测依据：_audit/test_comfy_log.py（仿 ComfyUI 子进程 → 真实 svc_start 路径）。
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]"                    # CSI：颜色 / 光标
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"       # OSC：标题 / 超链接
+    r"|\x1b[@-Z\\-_]")                          # 两字节转义
+
+
+def strip_ansi(s):
+    """剥掉 ANSI 转义序列；没有 ESC 的普通行原样返回（不复制、不改变内容）。"""
+    return _ANSI_RE.sub("", s) if "\x1b" in s else s
+
+
+# ---------------------------------------------------------------- 日志行解析
+PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3})\s*%")
+# 分数：前面不能是数字或小数点 —— 否则会把 "0.0001/0.0002" 这种小数当进度
+FRACTION_RE = re.compile(r"(?<![\d.])(\d+)\s*/\s*(\d+)")
+
+
+def progress_pct(line):
+    """从一行日志里解析进度百分比；解析不到返回 None。
+
+    优先用百分比：`x/y` 在非进度语境里到处都是 —— "宽高比 16/9"、"精度 0.0001/0.0002"、
+    "显存 7.6/12.0G"，拿它当进度会让进度条乱跳（实测 16/9 把标签写成 177%）。
+    """
+    m = PERCENT_RE.search(line)
+    if m:
+        return min(100, int(m.group(1)))
+    m = FRACTION_RE.search(line)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if b and a <= b:                     # a > b 不是进度（"16/9"）
+            return int(a * 100.0 / b)
+    return None
+
+
+# ComfyUI 的日志带 [INFO]/[WARNING]/[ERROR] 级别标记（剥掉 ANSI 颜色后纯文本还在）。
+# 英文日志里没有"失败/错误"这类中文关键词 —— 级别标记才是可靠信号。
+_LEVEL_RE = re.compile(r"\[(CRITICAL|ERROR|WARNING|WARN|DETAIL|DEBUG|INFO)\]")
+_LEVEL_KIND = {"CRITICAL": "error", "ERROR": "error",
+               "WARNING": "warning", "WARN": "warning",
+               "DETAIL": "detail", "DEBUG": "detail", "INFO": "info"}
+
+
+def log_level(line):
+    """识别日志行里的级别标记，返回语义级别；没有标记返回 None。
+
+    只返回语义（error/warning/info/detail），具体涂什么色由界面层决定。
+    """
+    m = _LEVEL_RE.search(line)
+    return _LEVEL_KIND[m.group(1)] if m else None
+
+
+# 日志行 → 着色标签名。标签名是界面层与这里约定的词汇（err/warn/ok/lw/dim），
+# 具体配色由界面层的 tag_config 决定 —— 这里只负责"这行属于哪一类"。
+_LEVEL_TAGS = {"error": "err", "warning": "warn", "info": "dim", "detail": "dim"}
+_WARN_WORDS = ("⚠️", "失败", "错误", "Traceback", "未就绪", "解析失败")
+_OK_WORDS = ("✅", "已就绪", "完成", "结束：rc=0", "rc=0")
+
+
+def tag_for(line):
+    """给一行日志选着色标签。
+
+    先看级别标记 —— 英文日志（ComfyUI）里没有"失败/错误"这类中文关键词，
+    [ERROR]/[WARNING] 才是可靠信号；以前这类行会被 [ComfyUI] 前缀涂成灰色。
+    """
+    tag = _LEVEL_TAGS.get(log_level(line))
+    if tag:
+        return tag
+    if any(k in line for k in _WARN_WORDS):
+        return "warn"
+    if any(k in line for k in _OK_WORDS):
+        return "ok"
+    if line.startswith("[工作流]") or line.startswith("[队列]"):
+        return "lw"
+    return "dim" if line.startswith("[ComfyUI]") else None
 
 
 # ================================================================ 崩溃落盘

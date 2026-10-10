@@ -18,7 +18,6 @@
 import json
 import os
 import queue
-import re
 import subprocess
 import sys
 import threading
@@ -64,6 +63,7 @@ SEEDVR2_PS  = os.path.join(CONFIG["deploy_root"], "03-SeedVR2", "批量放大.ps
 
 ps_quote = rt.ps_quote            # 命令串转义（实现在 运行时.py，别名保留以便调用/测试）
 NO_WINDOW = rt.NO_WINDOW          # 子进程"不弹黑窗"标记（GUI 程序里每个 Popen 都要带）
+strip_ansi = rt.strip_ansi        # 日志清洗：剥掉 ComfyUI 新版注入的 ANSI 颜色码
 
 MAX_LOG_LINES = 2000           # 日志区保留的最大行数，超出自动裁剪（防长任务日志无限增长拖慢 UI）
 
@@ -786,15 +786,7 @@ class App:
         self._log_lines = 0
 
     def _tag_for(self, line):
-        if any(k in line for k in ("⚠️", "失败", "错误", "Traceback", "未就绪", "解析失败")):
-            return "warn"
-        if any(k in line for k in ("✅", "已就绪", "完成", "结束：rc=0", "rc=0")):
-            return "ok"
-        if line.startswith("[工作流]") or line.startswith("[队列]"):
-            return "lw"
-        if line.startswith("[ComfyUI]"):
-            return "dim"
-        return None
+        return rt.tag_for(line)
 
     def _drain_log(self):
         """主线程心跳：排空日志队列 + 后台回调队列，然后重排程自己。
@@ -825,6 +817,7 @@ class App:
                 line, tag = self.logq.get_nowait()
             except queue.Empty:
                 return dirty
+            line = strip_ansi(line)       # ComfyUI 新版会注入 ANSI 颜色码，Tk 不认 → 会显示成方块
             self.logtxt.configure(state="normal")
             self.logtxt.insert("end", line + "\n", tag or self._tag_for(line) or ())
             # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
@@ -838,17 +831,15 @@ class App:
             self._maybe_progress(line)
 
     def _maybe_progress(self, line):
-        m = re.search(r"(\d+)\s*/\s*(\d+)", line)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            if b:
-                self.pbar.set(a * 100.0 / b)
-                self.pct_lab.configure(text="%d%%" % int(a * 100.0 / b))
-            return
-        m = re.search(r"(\d{1,3})\s*%", line)
-        if m:
-            self.pbar.set(int(m.group(1)))
-            self.pct_lab.configure(text=m.group(1) + "%")
+        """解析日志行里的进度并更新进度条（解析规则见 运行时.progress_pct）。"""
+        pct = rt.progress_pct(line)
+        if pct is not None:
+            self._set_pct(pct)
+
+    def _set_pct(self, pct):
+        pct = max(0, min(100, pct))       # 进度条自己会夹，但标签不会 —— 在源头夹住
+        self.pbar.set(pct)
+        self.pct_lab.configure(text="%d%%" % pct)
 
     def _set_task_ui(self, busy, name=""):
         if self._run_btn:
