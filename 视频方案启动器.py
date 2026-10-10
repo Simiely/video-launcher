@@ -557,7 +557,9 @@ class App(服务面板.服务面板):
         n = rt.apply_input(api, video)
         n2, warn = rt.apply_input_image(api, video, CONFIG)   # v1.2.15：I2V 类方案取首帧
         if warn:
-            self.log("[工作流] %s" % warn, "warn")
+            # 图里要图却给不出图（没选素材 / ffmpeg 抽帧失败）：推过去必然 400，
+            # 所以这里直接拦下，而不是带个不存在的占位图名去硬推。
+            return None, warn
         if video and not n and not n2:
             self.log("[工作流] 图里没有可替换的载入节点，沿用图内原路径", "dim")
         return api, why

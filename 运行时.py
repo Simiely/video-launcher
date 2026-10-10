@@ -950,6 +950,22 @@ def _ui_node_inputs(n, defs, links, resolve):
                 return None, "输入 %s %s" % (name, err)
             if val is not None:
                 inputs[name] = val
+    # V3 动态输入（Autogrow / MATCHTYPE）：这类槽在 object_info 里只有一个"模板"键
+    # （values: COMFY_AUTOGROW_V3），真正下发时用的是模板摊平出来的键。实测
+    # ComfyMathExpression：下发 **values.a** 才过校验，写成扁平的 a 会报
+    # "Required input is missing / details: a"（服务端报的 details 是模板名，
+    # 容易误导人去扁平化）。所以名字带点、定义里没有、又连了线的：
+    # **照原样下发**，不做任何改写。
+    for name, inp in ui_in.items():
+        if name in req or name in opt or inp.get("link") is None:
+            continue
+        if "." not in name:
+            continue
+        val, err = link_val(inp["link"])
+        if err:
+            return None, "输入 %s %s" % (name, err)
+        if val is not None:
+            inputs[name] = val
     return inputs, ""
 
 
