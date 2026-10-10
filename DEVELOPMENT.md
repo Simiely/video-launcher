@@ -2,38 +2,53 @@
 
 ## 项目概览
 
-单文件 Python GUI（`视频方案启动器.py`，约 450 行），管理本地三套视频 AI 方案。定位是**编排器**：自己不做推理，只负责「拉服务 / 传参调脚本 / 回传日志」。
+Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自己不做推理，只负责「拉服务 / 传参调脚本 / 回传日志」。
 
-- 入口：`main()` → `App(root)` → `root.mainloop()`
+- 组成（v1.2.0 起为两文件，零第三方依赖）：
+  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1035 行 / 逻辑行 890）
+  - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 532 行，**不 import 业务代码**）
+- 界面：深色 Fluent **三栏控制台**（左导航 / 中内容 / 右日志），蓝本为分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`
+- 入口：`main()` → `ui_kit.init_scaling()` → `App(root)` → `root.mainloop()`
 - 配置：模块级 `CONFIG` 字典 + 可选同目录 `启动器配置.json` 覆盖
-- 交付：源码直接运行，或用 PyInstaller 打成单文件 exe
+- 交付：源码直接运行，或用 PyInstaller 打成单文件 exe（会跟随 `import ui_kit` 自动打进去）
 
 ## 架构说明
 
 ```
 main()
  └─ App(root)
-     ├─ _build_ui()            状态条 / 三页签 / 日志区 / 底栏
+     ├─ _build_ui()            三栏：_build_sidebar / _build_center / _build_logpane
+     │   ├─ _build_sidebar()   左导航（NavItem）
+     │   ├─ _build_center()    服务状态条（置顶）+ 滚动舞台
+     │   │   ├─ _build_workflow_card()  下拉 + 加载 .json + 详情面板
+     │   │   ├─ _build_engine_area()    引擎标签 + 切换单卡
+     │   │   └─ _build_settings_card()  配置只读展示 + 打开目录
+     │   └─ _build_logpane()   日志（着色）+ 进度条
      ├─ 服务控制
      │   ├─ svc_start()        Popen(comfy_py -u main.py --disable-pinned-memory
      │   │                          --disable-async-offload --reserve-vram 1)
+     │   ├─ svc_restart()      先终止自有进程 → _restart_worker 轮询等服务退净 → 再起
      │   ├─ _svc_reader()      线程：逐行读 stdout → queue
      │   ├─ _svc_wait_ready()  线程：3s 轮询 /system_stats，最多 5 分钟，就绪自动开网页
      │   ├─ svc_stop()         只终止自己拉起的进程（外部启起的会明确提示）
      │   └─ open_web()         未运行时先 svc_start()，就绪后自动开页
      ├─ 批量任务
-     │   ├─ _run_ps()          拼 PS 命令行 + Popen + 禁用按钮 + 起读日志线程
+     │   ├─ _run_ps()          拼 PS 命令行 + Popen + 禁用运行按钮 + 起读日志线程
      │   ├─ _task_reader()     线程：回传日志，结束打印 rc / 耗时
      │   ├─ run_flashvsr()     -InputPath / -Mode / -Scale / -Format / -AutoStart
      │   └─ run_seedvr2()      -InputPath / -Profile / -Resolution / -Overwrite
+     ├─ 工作流
+     │   ├─ _on_wf_select()    选内置工作流 → 详情面板 + 切到对应引擎
+     │   ├─ _load_wf_json()    读本地 .json → 数节点 → 存 _loaded_api
+     │   └─ _push_wf()         对已加载的 API 图 POST /prompt
      ├─ 后台探测
-     │   ├─ _probe_loop()      每 5s 一次（root.after）
-     │   ├─ _probe_once()      读 /system_stats 取服务版本 + 显存；失败退回 nvidia-smi
-     │   └─ _gpu_by_nvidia_smi()
+     │   ├─ _probe_loop()      每 5s 一次（root.after，主线程）
+     │   ├─ _probe_once()      线程：读 /system_stats 取版本 + 显存；失败退回 nvidia-smi
+     │   └─ _apply_probe()     主线程：刷圆点 / 徽标 / 按钮态
      └─ on_close()             退出前确认中断任务 / 是否一并关服务
 ```
 
-**线程模型**：GUI 主线程只操作控件；子进程读日志、服务就绪轮询、状态探测都在 daemon 线程里，结果经 `queue.Queue` 由主线程 `after(150)` 消费 —— 避免跨线程操作 Tk。
+**线程模型（v1.2.0 收紧）**：GUI 主线程是**唯一**允许操作控件的地方。子进程读日志、服务就绪轮询、状态探测都在 daemon 线程，结果只做两件事：写 `logq`（日志文本）或往 `uiqueue` 投**回调**；主线程的 `_drain_log` 每 150ms 统一排空。**后台线程里绝不出现 `root.after` / 控件调用**。
 
 **代理隔离**：`NO_PROXY_OP = build_opener(ProxyHandler({}))` 专用于本机服务探测，与系统 Clash 代理彻底隔离。
 
@@ -117,8 +132,65 @@ main()
 - `_drain_log` 的 `Text.count()` tuple 陷阱 → 由**运行期冒烟**（`python 视频方案启动器.py` 实跑观察 stderr）抓到
 - 预防：代码改动后，静态（pylint/radon/vulture）+ 运行期（冒烟/行为探针）都要跑；见工作区审计脚本四件套
 
+### 问题：后台线程调 `root.after` 抛 `main thread is not in main loop`
+
+**TL;DR**：tkinter 非线程安全。后台线程**只能投递**（写 `logq` / `uiqueue`），一切控件操作留给主线程。
+
+- 问题：v1.2.0 首版里 `_probe_once` 线程末尾调 `self.root.after(0, self._apply_probe)` 刷新状态，渲染验证时抛 `RuntimeError: main thread is not in main loop`
+- 根因：非主线程调用 Tk 时，只有当主线程正处在 Tcl 事件循环里才可能被安全编组；一旦主线程不在 `mainloop`（例如以 `update()` 泵事件做自动化验证），就会直接抛错。即便在真实 `mainloop` 下"看起来能跑"，也属于未定义行为
+- 解决：新增 `self.uiqueue = queue.Queue()`，后台线程只 `uiqueue.put(callback)`；主线程的 `_drain_log` 心跳每 150ms 排空并执行。`_probe_once` / `_task_reader` / `_restart_worker` 全部改走这条路
+- 预防：**"后台线程里绝不出现 `root.after` 或任何控件调用"** 已固化成回归断言；纯非 Tk 的调用（如 `webbrowser.open`）可以直接在后台线程做
+
+### 问题：深色圆角卡片在 tkinter 里怎么画
+
+**TL;DR**：Canvas 自绘圆角多边形；`body` 四周内缩一个 `radius`，方角自然落在弧线内。
+
+- 问题：tk 的 `Frame` 没有圆角，直接用矩形内容框会盖住圆角、露出四个直角
+- 根因：`Frame` 的矩形内容区与圆角底图无法裁剪
+- 解决：`RoundedFrame` = `Canvas`（`place` 铺满）+ `body`（`pack` 内缩 `radius`）。内缩 `radius` 后，`body` 的直角恰好落在圆角弧的**圆心**上，永远在弧线内 → 不露方角；再叠 `pad` 得到设计稿的 16~18px 内边距
+- 阴影：tk 无 alpha 通道，用两层 `stipple="gray25"/"gray12"` 的黑色圆角块近似柔和阴影
+- 预防：任何"圆角 + 内容"的容器都走 `RoundedFrame`，不要另造轮子
+
+### 问题：Tk 把 `"transparent"` 当非法颜色名抛错
+
+**TL;DR**：`None` / `"transparent"` 必须在画之前归一化成"无描边"。
+
+- 问题：自绘按钮想用 `border="transparent"` 表达"不要描边"，Tk 抛 `unknown color name "transparent"`
+- 根因：`"transparent"` 是 CSS 概念，Tk 颜色表里没有
+- 解决：`RButton._draw` 里 `border = None if border in (None, "transparent") else border`，描边缺省时 `outline=fill`（视觉上不可见）
+- 预防：自绘控件对外接受的颜色参数都要先归一化，别把 web 习惯带进 Tk
+
+### 问题：窄窗口下顶栏按钮被挤出卡片
+
+**TL;DR**：右侧固定元素用 `side="right"` 先占位，可伸缩的 URL 最后 `pack` 吃剩余宽度。
+
+- 问题：顶栏按 `side="left"` 依次 `dot / 名称 / 徽标 / URL(expand) / 按钮组`，窗口一窄，URL 仍按自身请求宽度占位，把「打开网页 / 停止服务」顶出卡片右边界
+- 根因：`pack` 按装箱顺序先满足先装的 slave；`expand` 只分配**剩余**空间，不会让已装的 URL 收缩
+- 解决：按钮组（`停止 / 打开网页 / 启动`）先 `side="right"`，`URL` 最后 `side="left", expand=True`；并把显存/版本信息移到右栏标题行，顶栏只留设计稿里的元素
+- 验证：截图脚本里加断言 `末按钮右缘 <= 卡片右缘`
+- 预防：一行里"固定元素 + 弹性元素"并存时，固定元素一定先 `pack`；弹性元素放最后
+
+### 问题：高分屏下界面发虚 / 尺寸不成比例
+
+**TL;DR**：`SetProcessDpiAwareness(1)` + 按实际 DPI 换算像素；字号走磅值由 Tk 自动缩放。
+
+- 解决：`ui_kit.enable_dpi_awareness()`（必须在建窗口前调）→ `ui_kit.init_scaling(root)` 设 `SCALE = winfo_fpixels("1i")/96`、`tk scaling = .../72`、挑本机存在的中文 UI 字体
+- 约定：自绘控件的**像素**常量一律走 `S(v)`（乘 `SCALE`）；**字体**用磅值 `f(pt)` 交给 Tk 缩放 —— 两者才能同比例
+- 预防：新增硬编码尺寸时用 `S()` 包一层，别写裸像素
+
+### 问题：什么时候该从单文件拆分
+
+**TL;DR**：按 `AGENTS.md`「超阈值才拆分」——超过 pylint 默认模块上限（1000 逻辑行）就拆。
+
+- 背景：v1.2.0 把 UI 改成自绘后，单文件从 477 行涨到 1495 行、逻辑行 1268 > 1000，radon MI 从 A(26.0) 掉到 **C(0.00)**
+- 依据：项目约定「单文件交付，超阈值才拆分」；阈值取 pylint 默认 `max-module-lines = 1000`
+- 解决：抽出 `ui_kit.py`（控件库 + 设计令牌，532 行 / 逻辑行 ~400 / MI **B(19.0)**），主程序回到 1035 行 / 逻辑行 890
+- 遗留：主程序 MI 仍为 C(0.99)——890 逻辑行的单个 `App` 类 Halstead 体积天然高；若还要改善，可把 `App` 的卡片构建方法外移成 `ui_cards.py`
+- 预防：拆分判据用**可核查的数字**（radon SLOC / pylint 阈值），不靠"感觉文件有点长"
+
 ## 文档基线
 
+- 2026-10-10（v1.2.0）：**深色三栏 UI 重构** —— 抽出 `ui_kit.py` 自绘控件库；新增「跨线程 root.after / 圆角卡片画法 / transparent 颜色名 / 窄窗口 pack 顺序 / 高分屏缩放 / 拆分阈值」六篇问题记录
 - 2026-10-10：静态审计（radon/pylint/vulture）+ 运行期冒烟，修 v1.1.0 两个 P0（`alive` 未定义 / `Text.count` tuple 陷阱），新增本两篇问题记录
 - 2026-10-10（`755c05a`）：稳定性+性能加固，新增启动中锁 / 按钮态统一 / 日志裁剪两篇问题记录
 - 2026-10-09：建立四件套（README / AGENTS / DEVELOPMENT / CHANGELOG）

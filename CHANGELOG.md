@@ -2,6 +2,38 @@
 
 本文件记录本项目的版本变更。格式：版本号 + 日期 + 变更分类。
 
+## v1.2.0 · 2026-10-10
+
+**UI 重构：按 `ui-redesign` 分支的深色设计稿（`redesign/video_launcher_sidebar.html`）把界面整体重写为「三栏控制台」。**
+纯 tkinter 自绘（无第三方依赖不变），业务逻辑与 `.ps1` 调用契约完全保留。
+
+### 新增
+
+- **深色 Fluent 三栏布局**：左导航（服务 / 工作流 / FlashVSR / SeedVR2 / MiniMax H3 / 设置）+ 中内容（服务状态卡置顶 + 工作流卡 + 引擎标签切换单卡 + 设置卡）+ 右日志栏（含进度条）。配色按设计稿令牌：背景 `#15171c` / 卡片 `#232730` / 蓝 `#4a9eff` / 紫 `#b389f0` / 青 `#34d3b0`。
+- **自绘控件库 `ui_kit.py`**：圆角卡片（`RoundedFrame`，Canvas 画底 + stipple 阴影）、圆角按钮（`RButton`）、内联下拉（`Dropdown`）、互斥胶囊（`ChipRow`）、复选框（`CheckBox`）、圆角进度条（`ProgressBar`）、导航项（`NavItem`）。
+- **工作流卡**：6 套内置工作流下拉（含节点步骤详情面板：节点序号 / 输入输出 / 目标）+「加载 .json」解析本地 ComfyUI 工作流的节点数 +「推送到 ComfyUI / 加入队列」（对已加载的 API 图 POST `/prompt`）。
+- **任务进度条**：从日志行解析 `x/y` 或 `n%` 驱动右栏底部进度条。
+- **日志着色**：成功绿 / 工作流青 / 警告琥珀 / `[ComfyUI]` 暗灰 / 任务标题高亮。
+- **DPI 感知**：`SetProcessDpiAwareness` + 按实际 DPI 换算 `SCALE`，高分屏不再发虚。
+- **按钮语义**：顶栏主按钮随状态在「启动服务 / 启动中… / 重启服务」间切换；新增 `svc_restart()`（先停后起，轮询等服务真正退净再拉起）。
+
+### 变更
+
+- **模块拆分**：按 `AGENTS.md`「单文件交付，超阈值才拆分」的约定，把自绘控件抽到 `ui_kit.py`；主程序从 1495 行降到 1035 行（逻辑行 890 < pylint 默认模块上限 1000）。
+- **不再使用 ttk**：`ttk.Notebook` 页签 → 引擎标签切换单卡；`ttk.ScrolledText` → 自绘日志栏（保留 `MAX_LOG_LINES` 裁剪）。
+- 显存 / 版本信息从顶栏移到右栏标题行（避免窄窗口把顶栏按钮挤出边界）。
+
+### 修复
+
+- **跨线程调用 `root.after`（P0，本版引入、本版修复）**：探测/任务线程里直接调 `root.after` 会抛 `RuntimeError: main thread is not in main loop`，导致状态刷新/按钮态失效。改为后台线程只往 `uiqueue` 投递回调、由主线程 `_drain_log` 心跳统一排空。由渲染验证（截图脚本）捕获。
+- **窄窗口顶栏按钮被挤出卡片**：原按 `pack(side="left")` 顺序分配，URL 撑满后把「打开网页 / 停止服务」推出边界。改为按钮组先 `side="right"` 占位、URL 再吃剩余宽度。
+- **Tk 不接受 `"transparent"` 颜色名**：把 `None / "transparent"` 归一化成「无描边」，避免 `unknown color name "transparent"` 抛错。
+
+### 已知限制
+
+- 同 v1.1.2（仅 Windows；H3 参数在网页里调）。
+- 主程序 radon 可维护性指数仍为 C（890 逻辑行的单类 GUI，Halstead 体积天然偏高）；如需进一步改善，可再把 `App` 的卡片构建方法外移。
+
 ## v1.1.2 · 2026-10-10
 
 ### 修复
