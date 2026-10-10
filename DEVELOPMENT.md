@@ -5,7 +5,7 @@
 Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自己不做推理，只负责「拉服务 / 传参调脚本 / 回传日志」。
 
 - 组成（v1.2.14 起为四文件，零第三方依赖）：
-  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1080 行 / 逻辑行 899；版本号常量 `APP_VER` 在这里，窗口标题带它）
+  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1083 行 / 逻辑行 902；版本号常量 `APP_VER` 在这里，窗口标题带它）
   - `服务面板.py` —— **App 的服务 mixin**（v1.2.14 自主文件拆出，约 230 行 / 逻辑行 219）：
     服务启停 / 重启 / 队列清理 / 批量任务（`svc_*` / `_run_ps` / `_task_reader` 等 15 个方法）。
     只通过 `self.*` 使用宿主 App 的成员（pylint 的 no-member 在类级豁免并写明原因）；
@@ -19,7 +19,8 @@ Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自�
     崩溃落盘、绕代理 HTTP、**日志行解析与清洗**（ANSI 剥离 / 进度 / 级别 / 着色分类）、
     **日志落盘**（`LogFile` / `NoopLog`）、**启动自检**（`probe_path` / `startup_lines`）、
     **设置项的读写与打开**（`config_items` / `save_config` / `open_path`）、
-    **工作流 API 图的取用**（`pick_api` / `load_api` / `apply_input` / `apply_patch`）、
+    **工作流 API 图的取用**（`pick_api` / `load_api` / `apply_input` / `apply_patch` /
+    **`extract_first_frame` / `apply_input_image`**：I2V 类方案推送前用 ffmpeg 抽所选视频首帧喂 LoadImage）、
     **UI→API 转换器**（`is_ui_graph` / `ui_to_api` + `_ui_resolver` / `_ui_node_inputs` /
     `_ui_input_value`，v1.2.14）、**工作流目录扫描**（`workflows_dir` / `scan_workflows` /
     `read_workflow`）、**外部 ComfyUI 进程的查找与结束**（`find_comfy_pids` /
@@ -69,6 +70,9 @@ main()
      │   ├─ _wf_alias_edit()   「备注」弹窗改名，落盘 CONFIG["wf_alias"]（v1.2.14）
      │   ├─ _push_wf()         编排：探活 → 取图 → POST /prompt（成功/失败各一行日志）
      │   └─ _api_for()         备好要提交的图：本地图优先（先过 _ready_api 转换），
+     │                         内置方案按 pick_api 读绑定的图（v1.2.15 起六套全绑），
+     │                         apply_input 换素材路径、apply_input_image 换 I2V 首帧、
+     │                         apply_patch 覆盖方案参数
      │                         否则读方案绑定的图 + 覆盖参数；两条来源都先把素材换成界面选的输入
      ├─ 日志
      │   ├─ log(msg, tag)      只往 logq 投递（后台线程也安全）；tag 为 None 时由 _tag_for 判

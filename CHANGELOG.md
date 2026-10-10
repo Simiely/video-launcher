@@ -2,6 +2,42 @@
 
 本文件记录本项目的版本变更。格式：版本号 + 日期 + 变更分类。
 
+## v1.2.15 · 2026-10-10
+
+**六套内置方案全部可直推：MiniMax 子图展开成 API 图 + I2V 首帧自动抽取 + SeedVR2 补绑。**
+来自用户反馈："「MiniMax H3 · 图生视频 I2V」该方案没有内置 API 图……应该每个下拉菜单都可以推"。
+
+### 新增
+
+- **MiniMax 两套内置方案绑上真实 API 图**：画布里那份 `MiniMax-H3-T2V-12G-864x480.json`
+  是子图（21 个内部节点 + 切换开关），转换器暂不支持子图 —— 离线把子图**展开**成普通图，
+  按**实例 widgets_values**（864×480、时长 5s、种子等）校正后转成 API 格式，存
+  `workflows/MiniMax/MiniMax-H3-T2V.json`（23 节点）与 `MiniMax-H3-I2V.json`（24 节点）。
+- **I2V 首帧自动抽取**（`运行时.extract_first_frame` + `apply_input_image`）：I2V 图里的
+  `LoadImage` 吃的是 ComfyUI input 目录文件名，而启动器的输入是视频 —— 推送时自动用 ffmpeg
+  抽所选视频的**第一帧**存成 `input/launcher_first_frame.png` 喂进去。图里没有 LoadImage
+  时原样返回；素材没选/不存在给可读提醒。
+- **SeedVR2 两套内置方案补绑**（同一类欠账）：`sv_std` 绑现成的
+  `SeedVR2-12G-1080p.json`；`sv_max` 由它派生 `SeedVR2-极致-2160.json`（resolution 2160），
+  方案名与描述从「极致 原画」改为「极致 2160」—— SeedVR2 节点**没有「保持原画」参数**
+  （短边必须给目标值），原描述是做不到的承诺。
+- 顺手给转换器补了一条 V3 动态输入规则（`values.a` 这类**定义里没有但 UI 里有连线**的输入
+  也照写进 API —— ComfyMathExpression 等动态节点依赖它）；SaveVideo 的 V3 动态 combo
+  （format/codec）在离线展开时按实例值显式补回。
+
+### 设计要点
+
+- **子图实例的 `widgets_values` 才是权威值**：内层节点的同名副本是陈旧快照（实测 131 号
+  节点内层存着 1344×768 / value_1=2 / value_2=6，实例里是 864×480 / 5 / 8）—— 展开时一律
+  以实例为准注入。子图边界链接：输入 `origin_id=-10`（origin_slot = 输入序号）、
+  输出 `target_id=-20`。
+- 抽首帧的 ffmpeg 是第 9 个子进程调用点，照例带 `NO_WINDOW`（守卫计数 8→9）。
+
+### 验证
+
+行为 220/220（+4）；pylint 无 E；radon 无 D；vulture 净；渲染全绿；
+主文件逻辑行 902（余量 98）。
+
 ## v1.2.14 · 2026-10-10
 
 **ComfyUI 里存的工作流全量并入 + UI→API 转换器 + 工作流备注名。** 来自用户反馈："comfyui
