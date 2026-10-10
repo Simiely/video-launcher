@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 600" width="720" height="600" role="img">
+<title>Fluent 侧栏控制台方案（备选）</title>
+<desc>左侧 Fluent 风格侧栏导航，右侧英雄服务卡 + 当前工具卡片 + 日志卡</desc>
+<rect x="0" y="0" width="720" height="600" rx="0" fill="#15171c"/>
+<rect x="20" y="20" width="170" height="560" rx="12" fill="#232730"/>
+<rect x="36" y="36" width="40" height="40" rx="10" fill="#4a9eff"/>
+<text x="56" y="62" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18" fill="#0b1220" font-weight="600" text-anchor="middle">V</text>
+<text x="36" y="96" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f5" font-weight="500" text-anchor="start">视频启动器</text>
+<rect x="28" y="132" width="154" height="40" rx="8" fill="#2b303b"/>
+<rect x="28" y="132" width="4" height="40" rx="2" fill="#4a9eff"/>
+<rect x="40" y="140" width="24" height="24" rx="6" fill="#4a9eff"/>
+<text x="74" y="158" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f5" font-weight="500" text-anchor="start">服务</text>
+<rect x="40" y="188" width="24" height="24" rx="6" fill="#4a9eff"/>
+<text x="74" y="206" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#9aa3b2" font-weight="400" text-anchor="start">FlashVSR</text>
+<rect x="40" y="236" width="24" height="24" rx="6" fill="#b389f0"/>
+<text x="74" y="254" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#9aa3b2" font-weight="400" text-anchor="start">SeedVR2</text>
+<rect x="40" y="284" width="24" height="24" rx="6" fill="#34d3b0"/>
+<text x="74" y="302" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#9aa3b2" font-weight="400" text-anchor="start">MiniMax</text>
+<line x1="36" y1="330" x2="174" y2="330" stroke="#353b47" stroke-width="1"/>
+<rect x="40" y="332" width="24" height="24" rx="6" fill="#2b303b" stroke="#353b47" stroke-width="1"/>
+<text x="74" y="350" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#9aa3b2" font-weight="400" text-anchor="start">设置</text>
+<rect x="40" y="380" width="24" height="24" rx="6" fill="#2b303b" stroke="#353b47" stroke-width="1"/>
+<text x="74" y="398" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#9aa3b2" font-weight="400" text-anchor="start">日志</text>
+<rect x="210" y="20" width="490" height="84" rx="12" fill="#232730"/>
+<circle cx="234" cy="62" r="7" fill="#3fb950"/>
+<text x="250" y="67" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" fill="#eef1f5" font-weight="500" text-anchor="start">ComfyUI 服务</text>
+<rect x="360" y="50" width="84" height="24" rx="12" fill="#173a25"/><text x="402.0" y="66.0" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#3fb950" font-weight="500" text-anchor="middle">运行中</text>
+<text x="360" y="100" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">http://127.0.0.1:8188</text>
+<rect x="594" y="54" width="86" height="32" rx="8" fill="#2b303b" stroke="#353b47" stroke-width="1"/>
+<text x="637" y="74" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f5" font-weight="500" text-anchor="middle">停止服务</text>
+<rect x="210" y="120" width="490" height="330" rx="12" fill="#232730"/>
+<circle cx="244" cy="160" r="16" fill="#4a9eff"/>
+<text x="244" y="165" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" fill="#0b1220" font-weight="600" text-anchor="middle">F</text>
+<text x="270" y="166" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" fill="#eef1f5" font-weight="500" text-anchor="start">① FlashVSR 放大</text>
+<rect x="610" y="144" width="74" height="22" rx="6" fill="#2b303b"/><text x="647.0" y="159.0" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#4a9eff" font-weight="500" text-anchor="middle">2x / 4x</text>
+<line x1="226" y1="188" x2="684" y2="188" stroke="#353b47" stroke-width="1"/>
+<text x="234" y="222" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">模式</text>
+<rect x="234" y="230" width="210" height="32" rx="6" fill="#2b303b" stroke="#353b47" stroke-width="1"/>
+<text x="246" y="251" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#eef1f5" font-weight="400" text-anchor="start">通用 · 动画</text>
+<text x="234" y="292" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">放大倍数</text>
+<rect x="234" y="300" width="100" height="32" rx="6" fill="#4a9eff"/><text x="284.0" y="320.0" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#0b1220" font-weight="500" text-anchor="middle">2x</text>
+<rect x="342" y="300" width="104" height="32" rx="6" fill="#2b303b"/><text x="394.0" y="320.0" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#eef1f5" font-weight="500" text-anchor="middle">4x</text>
+<rect x="480" y="222" width="16" height="16" rx="4" fill="#2b303b" stroke="#353b47" stroke-width="1"/>
+<line x1="482" y1="227" x2="485" y2="230" stroke="#4a9eff" stroke-width="2"/><line x1="485" y1="230" x2="491" y2="222" stroke="#4a9eff" stroke-width="2"/>
+<text x="506" y="234" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">服务没跑就自动拉起</text>
+<text x="480" y="276" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">提示</text>
+<text x="480" y="298" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">批量放大.ps1 会被调用，</text>
+<text x="480" y="316" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">输出写入输出目录。</text>
+<rect x="480" y="344" width="210" height="34" rx="8" fill="#4a9eff"/><text x="585.0" y="366.0" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" fill="#0b1220" font-weight="500" text-anchor="middle">运行放大</text>
+<rect x="210" y="466" width="490" height="114" rx="12" fill="#232730"/>
+<text x="234" y="500" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" fill="#eef1f5" font-weight="500" text-anchor="start">运行日志</text>
+<text x="676" y="500" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="end">清空</text>
+<text x="234" y="524" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">[服务] ComfyUI 已就绪 :8188</text>
+<text x="234" y="546" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12" fill="#9aa3b2" font-weight="400" text-anchor="start">[FlashVSR] 处理 3/12 clip_04.mp4</text>
+<rect x="234" y="560" width="442" height="8" rx="4" fill="#2b303b"/>
+<rect x="234" y="560" width="176" height="8" rx="4" fill="#4a9eff"/>
+</svg>

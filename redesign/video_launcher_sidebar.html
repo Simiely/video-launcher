@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频方案启动器 · 三栏控制台（左导航 / 中内容 / 右日志）</title>
+<style>
+  :root{
+    --bg:#15171c; --card:#232730; --card2:#2b303b; --border:#353b47;
+    --txt:#eef1f5; --txt2:#9aa3b2; --blue:#4a9eff; --purp:#b389f0;
+    --teal:#34d3b0; --green:#3fb950; --amber:#e3b341; --red:#f85149;
+    --darktx:#0b1220; --radius:12px;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.28);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:'Segoe UI',system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+  }
+  .app{max-width:1180px;margin:0 auto;padding:16px;height:calc(100vh - 32px);display:flex;gap:14px;}
+
+  /* ===== shared ===== */
+  .btn{border:1px solid var(--border);background:var(--card2);color:var(--txt);border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:500;cursor:pointer;transition:.15s;font-family:inherit;white-space:nowrap;flex:none;line-height:1.4;}
+  .btn:hover{border-color:#4a525f;background:#333a47;}
+  .btn-teal{background:var(--teal);color:var(--darktx);border-color:transparent;}
+  .btn-teal:hover{filter:brightness(1.08);}
+  .btn-ghost{background:transparent;}
+  .tag{font-size:11.5px;color:var(--txt2);border:1px solid var(--border);padding:2px 8px;border-radius:6px;white-space:nowrap;flex:none;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);}
+
+  /* ===== Left: nav ===== */
+  .sidebar{width:206px;flex:none;padding:16px 12px;display:flex;flex-direction:column;}
+  .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px;}
+  .brand .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--blue),var(--teal));display:grid;place-items:center;font-weight:700;color:var(--darktx);font-size:17px;flex:none;}
+  .brand .bt{font-weight:600;font-size:14px;white-space:nowrap;}
+  .nav{display:flex;flex-direction:column;gap:2px;}
+  .nav .item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:8px;cursor:pointer;color:var(--txt2);font-size:13px;font-weight:500;transition:.12s;position:relative;white-space:nowrap;}
+  .nav .item:hover{background:var(--card2);color:var(--txt);}
+  .nav .item.active{background:var(--card2);color:var(--txt);}
+  .nav .item.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--blue);}
+  .nav .sq{width:22px;height:22px;border-radius:6px;flex:none;}
+  .nav .divider{height:1px;background:var(--border);margin:10px 6px;flex:none;}
+  .nav .badge{margin-left:auto;font-size:10.5px;background:var(--blue);color:var(--darktx);padding:1px 7px;border-radius:999px;font-weight:600;flex:none;}
+  .nav .spacer{flex:1;}
+
+  /* ===== Center: content ===== */
+  .center{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px;}
+
+  /* service topbar (pinned, never scrolls) */
+  .topbar{display:flex;align-items:center;gap:10px;padding:12px 16px;flex:none;}
+  .topbar .dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(63,185,80,.16);flex:none;}
+  .topbar .name{font-weight:600;font-size:13.5px;white-space:nowrap;flex:none;}
+  .topbar .pill{font-size:11.5px;font-weight:600;padding:2px 10px;border-radius:999px;background:#173a25;color:var(--green);white-space:nowrap;flex:none;}
+  .topbar .url{color:var(--txt2);font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .topbar .tacts{display:flex;gap:8px;flex:none;}
+
+  .stage{flex:1;min-height:0;padding:18px 20px 22px;overflow:auto;display:flex;flex-direction:column;gap:14px;}
+  .section-label{font-size:12px;color:var(--txt2);text-transform:uppercase;letter-spacing:.08em;flex:none;}
+
+  /* workflow card */
+  .wf{padding:16px 18px;flex:none;}
+  .wf-head{display:flex;align-items:center;gap:10px;margin-bottom:13px;}
+  .wf-head .ico{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--blue),var(--teal));display:grid;place-items:center;color:var(--darktx);font-weight:700;flex:none;}
+  .wf-head h2{font-size:15px;margin:0;font-weight:600;white-space:nowrap;}
+  .wf-head .grow{flex:1;min-width:0;}
+  .selectrow{display:flex;align-items:center;gap:12px;}
+  .selectrow label{font-size:12.5px;color:var(--txt2);flex:none;}
+  select.wfsel{flex:1;min-width:0;background:var(--card2);color:var(--txt);border:1px solid var(--border);border-radius:8px;padding:9px 32px 9px 12px;font-size:13.5px;font-family:inherit;cursor:pointer;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><path d='M2 4l4 4 4-4' stroke='%239aa3b2' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 12px center;}
+  select.wfsel:focus{outline:none;border-color:var(--blue);}
+  .selectrow .nodes-tag{min-width:64px;text-align:center;}
+  .detail{display:none;margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:#1c202a;}
+  .detail.show{display:block;}
+  .detail .dhead{display:flex;align-items:center;gap:10px;}
+  .detail .dname{font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .detail .badge{font-size:11px;padding:1px 9px;border-radius:5px;font-weight:600;white-space:nowrap;flex:none;}
+  .detail .grow{flex:1;}
+  .detail .desc{font-size:12.5px;color:var(--txt2);margin:10px 0 6px;}
+  .steps{list-style:none;margin:10px 0 4px;padding:0;}
+  .steps li{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13px;border-top:1px dashed var(--border);}
+  .steps li:first-child{border-top:none;}
+  .steps .n{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;color:var(--darktx);flex:none;}
+  .steps .node{color:var(--txt);white-space:nowrap;}
+  .steps .io{margin-left:auto;font-size:11px;color:var(--txt2);white-space:nowrap;}
+  .meta{display:flex;gap:18px;margin:12px 0 4px;flex-wrap:wrap;}
+  .meta .item{font-size:12.5px;color:var(--txt2);white-space:nowrap;}
+  .meta .item b{color:var(--txt);font-weight:600;font-size:13px;}
+  .detail .acts{display:flex;gap:10px;margin-top:14px;}
+
+  /* engine tabs */
+  .tabs{display:flex;gap:8px;flex:none;}
+  .tab{flex:1;border:1px solid var(--border);background:var(--card2);color:var(--txt2);border-radius:8px;padding:9px 8px;font-size:13px;font-weight:600;cursor:pointer;transition:.12s;font-family:inherit;white-space:nowrap;}
+  .tab:hover{color:var(--txt);border-color:#4a525f;}
+  .tabs[data-active="flashvsr"] .tab[data-engine="flashvsr"]{background:var(--blue);color:var(--darktx);border-color:transparent;}
+  .tabs[data-active="seedvr2"] .tab[data-engine="seedvr2"]{background:var(--purp);color:var(--darktx);border-color:transparent;}
+  .tabs[data-active="minimax"] .tab[data-engine="minimax"]{background:var(--teal);color:var(--darktx);border-color:transparent;}
+
+  /* engine card */
+  .tool{padding:16px 16px 18px;display:flex;flex-direction:column;flex:none;}
+  .tool .head{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .avatar{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-weight:700;color:var(--darktx);font-size:14px;flex:none;}
+  .tool .tname{font-weight:600;font-size:14px;white-space:nowrap;}
+  .tool .ttag{margin-left:auto;font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--card2);white-space:nowrap;flex:none;}
+  .tool hr{border:none;border-top:1px solid var(--border);margin:4px 0 14px;}
+  .field{margin-bottom:12px;}
+  .field:last-child{margin-bottom:0;}
+  .field .lab{font-size:11.5px;color:var(--txt2);margin-bottom:5px;}
+  .select{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px;color:var(--txt);width:100%;}
+  .chips{display:flex;gap:8px;}
+  .chip{flex:1;text-align:center;background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:8px 6px;font-size:12.5px;color:var(--txt);cursor:pointer;transition:.12s;white-space:nowrap;}
+  .chip.on{background:var(--blue);color:var(--darktx);border-color:transparent;font-weight:600;}
+  .chk{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--txt2);margin:14px 0;}
+  .chk .box{width:16px;height:16px;border-radius:4px;border:1px solid var(--border);background:var(--card2);display:grid;place-items:center;flex:none;}
+  .chk .box svg{display:none;}
+  .chk.on .box{background:var(--blue);border-color:transparent;}
+  .chk.on .box svg{display:block;}
+  .tool .run{padding:9px;border-radius:8px;font-size:13px;font-weight:600;text-align:center;cursor:pointer;color:var(--darktx);transition:.12s;}
+  .tool .run:hover{filter:brightness(1.07);}
+  .tool .loadwf{margin-top:9px;font-size:12px;color:var(--txt2);text-align:center;cursor:pointer;text-decoration:underline;}
+  .tool .loadwf:hover{color:var(--txt);}
+  .t-blue .avatar{background:var(--blue);}
+  .t-blue .ttag{color:var(--blue);} .t-blue .run{background:var(--blue);}
+  .t-purp .avatar{background:var(--purp);}
+  .t-purp .ttag{color:var(--purp);} .t-purp .run{background:var(--purp);}
+  .t-teal .avatar{background:var(--teal);}
+  .t-teal .ttag{color:var(--teal);} .t-teal .run{background:var(--teal);}
+  .ph{color:var(--txt2);font-size:13px;}
+
+  /* ===== Right: log pane ===== */
+  .logpane{width:312px;flex:none;display:flex;flex-direction:column;min-height:0;}
+  .logpane .lhead{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);flex:none;}
+  .logpane .lhead h3{font-size:13.5px;margin:0;font-weight:600;}
+  .logpane .lhead .clear{font-size:12px;color:var(--txt2);cursor:pointer;text-decoration:underline;white-space:nowrap;}
+  .logpane .lines{flex:1;overflow:auto;padding:12px 16px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12px;color:var(--txt2);line-height:1.7;min-height:0;}
+  .logpane .lines .e{color:var(--txt);}
+  .logpane .lines .ok{color:var(--green);}
+  .logpane .lines .lw{color:var(--teal);}
+  .logpane .lfoot{padding:10px 16px;border-top:1px solid var(--border);flex:none;}
+  .logpane .bar{height:8px;border-radius:4px;background:var(--card2);overflow:hidden;}
+  .logpane .bar > i{display:block;height:100%;background:var(--blue);width:65%;}
+  .logpane .lstat{display:flex;justify-content:space-between;font-size:11.5px;color:var(--txt2);margin-top:6px;}
+
+  @media(max-width:980px){
+    .app{flex-direction:column;height:auto;}
+    .sidebar{width:100%;}
+    .nav{flex-direction:row;flex-wrap:wrap;}
+    .nav .divider,.nav .spacer{display:none;}
+    .logpane{width:100%;height:280px;}
+    .topbar{flex-wrap:wrap;}
+    .topbar .url{flex-basis:100%;order:5;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ LEFT: NAV ============ -->
+  <aside class="card sidebar">
+    <div class="brand"><div class="logo">V</div><div class="bt">视频启动器</div></div>
+    <nav class="nav" id="nav">
+      <div class="item" data-view="service"><span class="sq" style="background:var(--blue)"></span>服务</div>
+      <div class="item" data-view="workflow"><span class="sq" style="background:linear-gradient(135deg,var(--blue),var(--teal))"></span>工作流<span class="badge" id="wfBadge">6</span></div>
+      <div class="item" data-view="flashvsr"><span class="sq" style="background:var(--blue)"></span>FlashVSR</div>
+      <div class="item" data-view="seedvr2"><span class="sq" style="background:var(--purp)"></span>SeedVR2</div>
+      <div class="item" data-view="minimax"><span class="sq" style="background:var(--teal)"></span>MiniMax H3</div>
+      <div class="divider"></div>
+      <div class="item" data-view="settings"><span class="sq" style="background:var(--card2);border:1px solid var(--border)"></span>设置</div>
+      <div class="spacer"></div>
+    </nav>
+  </aside>
+
+  <!-- ============ CENTER ============ -->
+  <div class="center">
+    <!-- 服务置顶（不随下方滚动） -->
+    <div class="card topbar" id="secService">
+      <span class="dot"></span>
+      <span class="name">ComfyUI 服务</span>
+      <span class="pill">运行中</span>
+      <span class="url">http://127.0.0.1:8188</span>
+      <div class="tacts">
+        <button class="btn">重启服务</button>
+        <button class="btn">打开网页</button>
+        <button class="btn">停止服务</button>
+      </div>
+    </div>
+
+    <div class="card stage">
+      <!-- 工作流（服务下方，置顶） -->
+      <div class="section-label">工作流 · App 内置下拉选择，也可加载本地 .json</div>
+      <div class="card wf" id="secWorkflow">
+        <div class="wf-head">
+          <div class="ico">⚙</div>
+          <h2>选择 / 加载工作流</h2>
+          <span class="tag" id="wfCount">6 套内置</span>
+          <span class="grow"></span>
+          <button class="btn btn-teal" id="loadWfBtn">加载 .json</button>
+          <input type="file" id="wfFile" accept=".json" hidden>
+        </div>
+        <div class="selectrow">
+          <label for="wfsel">工作流</label>
+          <select class="wfsel" id="wfsel">
+            <option value="" disabled selected>— 请选择一套内置工作流 —</option>
+          </select>
+          <span class="tag nodes-tag" id="wfNodes">— 节点</span>
+        </div>
+        <div class="detail" id="detail">
+          <div class="dhead">
+            <span class="dname" id="dName">—</span>
+            <span class="badge" id="dBadge">—</span>
+            <span class="grow"></span>
+          </div>
+          <div class="desc" id="dDesc"></div>
+          <ul class="steps" id="dSteps"></ul>
+          <div class="meta">
+            <div class="item">节点 <b id="dNodes">0</b></div>
+            <div class="item">输入 <b id="dIn">—</b></div>
+            <div class="item">输出 <b id="dOut">—</b></div>
+            <div class="item">目标 <b>ComfyUI :8188</b></div>
+          </div>
+          <div class="acts">
+            <button class="btn btn-teal" id="pushBtn">推送到 ComfyUI</button>
+            <button class="btn btn-ghost" id="queueBtn">加入队列</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 引擎标签切换（点击才显示，默认 FlashVSR） -->
+      <div class="section-label">引擎 · 点击标签切换，默认 FlashVSR</div>
+      <div class="tabs" id="engineTabs" data-active="flashvsr">
+        <button class="tab" data-engine="flashvsr">FlashVSR</button>
+        <button class="tab" data-engine="seedvr2">SeedVR2</button>
+        <button class="tab" data-engine="minimax">MiniMax H3</button>
+      </div>
+      <div class="card tool t-blue" id="engineCard">
+        <div class="head">
+          <div class="avatar" id="eAvatar">F</div>
+          <div class="tname" id="eName">FlashVSR 放大</div>
+          <div class="ttag" id="eTag">2x / 4x</div>
+        </div>
+        <hr>
+        <div id="eFields"></div>
+        <div class="chk on" data-chk>
+          <span class="box"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l3 3 5-7" stroke="#0b1220" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span>服务没跑就自动拉起</span>
+        </div>
+        <div class="run" id="eRun">运行放大</div>
+        <div class="loadwf" data-gotowf>从工作流库选择 →</div>
+      </div>
+
+      <!-- 设置（左导航"设置"跳转处） -->
+      <div class="section-label">设置</div>
+      <div class="card wf" id="secSettings">
+        <div class="ph">comfy_dir / comfy_py · deploy_root · ffmpeg_dir · input_dir / output_dir …（同 启动器配置.json）</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT: LOG ============ -->
+  <aside class="card logpane">
+    <div class="lhead"><h3>运行日志</h3><span class="clear" id="clearLog">清空</span></div>
+    <div class="lines" id="log">
+      <div class="ok">[服务] ComfyUI 已就绪 :8188</div>
+      <div>[FlashVSR] 批量放大 2x 开始…</div>
+      <div>[FlashVSR] 处理 3/12 clip_04.mp4</div>
+      <div class="ok">[FlashVSR] 完成 12/12</div>
+      <div class="lw">[工作流] 已选择 FlashVSR · 通用 2x 放大</div>
+    </div>
+    <div class="lfoot">
+      <div class="bar"><i></i></div>
+      <div class="lstat"><span>任务进度</span><span>65%</span></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+  const $ = (s)=>document.querySelector(s);
+  const logEl = $('#log');
+  function log(msg, cls){
+    const d = document.createElement('div');
+    if(cls) d.className = cls;
+    d.textContent = msg; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ===== Built-in workflows (each has real content: node steps) =====
+  const ENG = {
+    FlashVSR:{c:'var(--blue)',  label:'FlashVSR'},
+    SeedVR2: {c:'var(--purp)',  label:'SeedVR2'},
+    MiniMax: {c:'var(--teal)',  label:'MiniMax H3'}
+  };
+  const WORKFLOWS = [
+    { id:'fv_2x', engine:'FlashVSR', name:'FlashVSR · 通用 2x 放大',
+      desc:'通用超分，适合写实/日常视频，输出 2 倍分辨率。',
+      steps:[['LoadVideo','input_dir'],['FlashVSR 超分','scale=2'],['(可选) 帧插值','fps×2'],['SaveVideo','output_dir']],
+      inN:'1 × LoadVideo', outN:'1 × SaveVideo' },
+    { id:'fv_4x', engine:'FlashVSR', name:'FlashVSR · 动画 4x 放大',
+      desc:'针对动画/二次元优化，输出 4 倍分辨率，细节更锐。',
+      steps:[['LoadVideo','input_dir'],['FlashVSR 超分','scale=4'],['CAS 锐化','strength=0.4'],['SaveVideo','output_dir']],
+      inN:'1 × LoadVideo', outN:'1 × SaveVideo' },
+    { id:'sv_std', engine:'SeedVR2', name:'SeedVR2 · 标准 1080p',
+      desc:'标准档，短边缩放到 1080，速度与质量平衡。',
+      steps:[['LoadVideo','input_dir'],['SeedVR2 标准档','tile=512'],['Resize 短边','1080'],['SaveVideo','output_dir']],
+      inN:'1 × LoadVideo', outN:'1 × SaveVideo' },
+    { id:'sv_max', engine:'SeedVR2', name:'SeedVR2 · 极致 原画',
+      desc:'极致档，保留原画分辨率，显存占用高、最慢。',
+      steps:[['LoadVideo','input_dir'],['SeedVR2 极致档','tile=384'],['FaceRestore','on'],['SaveVideo','output_dir']],
+      inN:'1 × LoadVideo', outN:'1 × SaveVideo' },
+    { id:'mm_t2v', engine:'MiniMax', name:'MiniMax H3 · 文生视频 T2V',
+      desc:'用提示词直接生成视频（Text-to-Video）。',
+      steps:[['TextEncode','prompt'],['MiniMax H3','T2V'],['VAEDecode',''],['SaveVideo','output_dir']],
+      inN:'0（纯文本）', outN:'1 × SaveVideo' },
+    { id:'mm_i2v', engine:'MiniMax', name:'MiniMax H3 · 图生视频 I2V',
+      desc:'以首帧图片驱动生成视频（Image-to-Video）。',
+      steps:[['LoadImage','first_frame'],['MiniMax H3','I2V'],['VAEDecode',''],['SaveVideo','output_dir']],
+      inN:'1 × LoadImage', outN:'1 × SaveVideo' },
+  ];
+
+  const sel = $('#wfsel');
+  WORKFLOWS.forEach(w=>{ const o=document.createElement('option'); o.value=w.id; o.textContent=w.name; sel.appendChild(o); });
+  $('#wfCount').textContent = WORKFLOWS.length + ' 套内置';
+  $('#wfBadge').textContent = WORKFLOWS.length;
+
+  const detail = $('#detail');
+  function showDetail(w){
+    const e = ENG[w.engine];
+    $('#dName').textContent = w.name;
+    const badge = $('#dBadge'); badge.textContent = e.label; badge.style.background = e.c; badge.style.color='var(--darktx)';
+    $('#dDesc').textContent = w.desc;
+    const ul = $('#dSteps'); ul.innerHTML='';
+    w.steps.forEach((st,i)=>{
+      const li=document.createElement('li');
+      const n=document.createElement('span'); n.className='n'; n.style.background=e.c; n.textContent=i+1;
+      const node=document.createElement('span'); node.className='node'; node.textContent=st[0];
+      li.appendChild(n); li.appendChild(node);
+      if(st[1]){ const io=document.createElement('span'); io.className='io'; io.textContent=st[1]; li.appendChild(io); }
+      ul.appendChild(li);
+    });
+    $('#dNodes').textContent = w.steps.length;
+    $('#dIn').textContent = w.inN; $('#dOut').textContent = w.outN;
+    detail.classList.add('show');
+    log('[工作流] 已选择 '+w.name, w.engine==='MiniMax'?'lw':'');
+  }
+  sel.addEventListener('change', ()=>{ const w=WORKFLOWS.find(x=>x.id===sel.value); if(w) showDetail(w); });
+  $('#pushBtn').onclick = ()=>{ const w=WORKFLOWS.find(x=>x.id===sel.value); if(!w) return;
+    log('[工作流] 推送「'+w.name+'」→ ComfyUI :8188 …', w.engine==='MiniMax'?'lw':'');
+    setTimeout(()=>log('[ComfyUI] 已接收 prompt，队列中','ok'),600); };
+  $('#queueBtn').onclick = ()=>{ const w=WORKFLOWS.find(x=>x.id===sel.value); if(!w) return; log('[队列] 已加入「'+w.name+'」','lw'); };
+
+  // load local .json workflow
+  $('#loadWfBtn').onclick = ()=> $('#wfFile').click();
+  $('#wfFile').addEventListener('change',(e)=>{
+    const f=e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const j=JSON.parse(r.result);
+        let n=0;
+        if(Array.isArray(j.nodes)) n=j.nodes.length;
+        else if(j.api && Array.isArray(j.api.nodes)) n=j.api.nodes.length;
+        else if(j.graph && Array.isArray(j.graph.nodes)) n=j.graph.nodes.length;
+        else n=Object.keys(j).length;
+        $('#wfNodes').textContent = n+' 节点';
+        $('#dName').textContent = f.name;
+        const badge=$('#dBadge'); badge.textContent='本地'; badge.style.background='var(--amber)'; badge.style.color='var(--darktx)';
+        $('#dDesc').textContent='已从本地加载：'+f.name;
+        $('#dSteps').innerHTML='';
+        $('#dNodes').textContent=n; $('#dIn').textContent='—'; $('#dOut').textContent='—';
+        detail.classList.add('show');
+        log('[工作流] 已加载本地 '+f.name+'（'+n+' 节点）','lw');
+      }catch(err){ log('[工作流] 解析失败：'+err.message,'e'); }
+    };
+    r.readAsText(f);
+  });
+
+  // ===== Engine card: single switching card, click tab to show, default FlashVSR =====
+  const ENGINES = {
+    flashvsr:{ cls:'t-blue', avatar:'F', name:'FlashVSR 放大', tag:'2x / 4x', run:'运行放大',
+      fields:[
+        {lab:'模式', sel:['通用 · 动画','写实 · 人物']},
+        {lab:'放大倍数', chips:['2x','4x'], on:0}
+      ]},
+    seedvr2:{ cls:'t-purp', avatar:'S', name:'SeedVR2 放大', tag:'短边自适应', run:'运行放大',
+      fields:[
+        {lab:'档位', sel:['标准','高质量','极致']},
+        {lab:'短边分辨率', chips:['720','1080','原画'], on:0}
+      ]},
+    minimax:{ cls:'t-teal', avatar:'M', name:'MiniMax H3 生成', tag:'网页工作流', run:'打开 ComfyUI 网页',
+      fields:[
+        {lab:'在网页 ComfyUI 中搭工作流', static:'Video → MiniMax H3 → T2V'},
+        {lab:'', note:'内置 T2V / I2V 工作流，可直接在下拉库中选择推送。'}
+      ]}
+  };
+  const engineCard = $('#engineCard');
+  const tabsEl = $('#engineTabs');
+  function renderEngine(key){
+    const e = ENGINES[key];
+    engineCard.className = 'card tool ' + e.cls;
+    $('#eAvatar').textContent = e.avatar;
+    $('#eName').textContent = e.name;
+    $('#eTag').textContent = e.tag;
+    $('#eRun').textContent = e.run;
+    tabsEl.dataset.active = key;
+    const wrap = $('#eFields'); wrap.innerHTML='';
+    e.fields.forEach(f=>{
+      const field=document.createElement('div'); field.className='field';
+      if(f.lab){ const lab=document.createElement('div'); lab.className='lab'; lab.textContent=f.lab; field.appendChild(lab); }
+      if(f.sel){
+        const s=document.createElement('select'); s.className='select';
+        f.sel.forEach(o=>{ const op=document.createElement('option'); op.textContent=o; s.appendChild(op); });
+        field.appendChild(s);
+      } else if(f.static){
+        const s=document.createElement('div'); s.className='select'; s.style.cursor='default'; s.textContent=f.static; field.appendChild(s);
+      } else if(f.chips){
+        const g=document.createElement('div'); g.className='chips';
+        f.chips.forEach((c,i)=>{ const ch=document.createElement('div'); ch.className='chip'+(i===f.on?' on':''); ch.textContent=c; g.appendChild(ch); });
+        field.appendChild(g);
+      } else if(f.note){
+        const n=document.createElement('div'); n.style.color='var(--txt2)'; n.style.fontSize='12px'; n.textContent=f.note; field.appendChild(n);
+      }
+      wrap.appendChild(field);
+    });
+    wrap.querySelectorAll('.chips').forEach(g=>{
+      g.querySelectorAll('.chip').forEach(ch=>{ ch.onclick=()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('on')); ch.classList.add('on'); }; });
+    });
+  }
+  tabsEl.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>renderEngine(t.dataset.engine); });
+
+  // ===== Left nav: block navigation for the center =====
+  const nav = $('#nav');
+  nav.querySelectorAll('.item').forEach(it=>{
+    it.onclick = ()=>{
+      nav.querySelectorAll('.item').forEach(x=>x.classList.remove('active'));
+      it.classList.add('active');
+      const v = it.dataset.view;
+      if(v==='service'){ $('#secService').scrollIntoView({behavior:'smooth',block:'center'}); }
+      else if(v==='workflow'){ $('#secWorkflow').scrollIntoView({behavior:'smooth',block:'center'}); }
+      else if(v==='settings'){ $('#secSettings').scrollIntoView({behavior:'smooth',block:'center'}); }
+      else if(['flashvsr','seedvr2','minimax'].includes(v)){
+        renderEngine(v);
+        $('#engineTabs').scrollIntoView({behavior:'smooth',block:'center'});
+      }
+    };
+  });
+
+  // checkbox toggles (service auto-launch)
+  document.querySelectorAll('[data-chk]').forEach(c=>{ c.onclick=()=>c.classList.toggle('on'); });
+  // "select from library" links -> focus dropdown
+  document.querySelectorAll('[data-gotowf]').forEach(el=>{
+    el.onclick=()=>{ $('#secWorkflow').scrollIntoView({behavior:'smooth',block:'center'}); sel.focus(); sel.style.outline='2px solid var(--blue)'; setTimeout(()=>sel.style.outline='',1200); };
+  });
+  $('#clearLog').onclick = ()=> logEl.innerHTML='';
+
+  // default: show FlashVSR in the center
+  renderEngine('flashvsr');
+  nav.querySelector('[data-view="flashvsr"]').classList.add('active');
+</script>
+</body>
+</html>
