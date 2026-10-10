@@ -313,7 +313,12 @@ class NavItem(tk.Frame):
 
 # ---------------------------------------------------------------- 内联下拉
 class Dropdown(tk.Frame):
-    """深色内联下拉：触发条 + 就地展开的选项面板（不用 Toplevel，免焦点问题）。"""
+    """深色下拉：触发条 + 弹出式选项浮层（无边框 Toplevel）。
+
+    v1.2.12 前是"就地展开"（面板 pack 在卡片里），每展开一次就把整张卡片撑高、
+    上排高度跟着跳 —— 改为浮层后布局完全不动。旧结论"不用 Toplevel 免焦点问题"
+    由 grab_set + wait_visibility 推翻，v1.2.10 的 ask_text 已验证这条路可靠。
+    """
 
     def __init__(self, master, values, command=None, *, outer=BG, fill=CARD2,
                  placeholder="请选择", font=None, height=None, highlight=BLUE):
@@ -324,14 +329,13 @@ class Dropdown(tk.Frame):
         self._font = font or f(10)
         self._placeholder = placeholder
         self.value = None
-        self._open = False
+        self._pop = None
         self._h = height if height is not None else S(36)
         self.trig = RButton(self, text=placeholder, command=self.toggle, stretch=True,
                             fill=fill, fg=TXT2, border=BORDER, align="w",
                             chevron=True, font=self._font, outer=outer, height=self._h,
                             padx=12)
         self.trig.pack(fill="x")
-        self.panel = tk.Frame(self, bg=outer)
 
     def set_values(self, values, placeholder=None):
         self._values = list(values)
@@ -341,8 +345,8 @@ class Dropdown(tk.Frame):
             self.value = None
             self.trig.set_text(self._placeholder)
             self.trig.set_fill(self._fill, TXT2, BORDER)
-        if self._open:
-            self._build_panel()
+        if self._pop is not None and self._pop.winfo_exists():
+            self._fill_panel()
 
     def set(self, value, notify=False):
         self.value = value
@@ -353,34 +357,53 @@ class Dropdown(tk.Frame):
             self._cmd(value)
 
     def toggle(self):
-        if self._open:
+        if self._pop is not None and self._pop.winfo_exists():
             self._collapse()
         else:
             self._expand()
 
     def _expand(self):
-        self._build_panel()
-        self.panel.pack(fill="x", pady=(S(4), 0))
-        self._open = True
+        pop = tk.Toplevel(self)
+        pop.overrideredirect(True)
+        pop.configure(bg=BORDER)
+        self._pop = pop
+        self._fill_panel()
+        pop.update_idletasks()
+        x = self.trig.winfo_rootx()
+        y = self.trig.winfo_rooty() + self.trig.winfo_height() + S(4)
+        w = self.trig.winfo_width()
+        h = pop.winfo_reqheight()
+        if y + h > pop.winfo_screenheight() - S(8):        # 下方放不下就朝上弹
+            y = max(S(8), self.trig.winfo_rooty() - h - S(4))
+        pop.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        pop.deiconify()
+        pop.wait_visibility()                     # grab 只对"已可见"的窗口生效
+        pop.grab_set()                            # 浮层开着时所有点击都归它：
+        pop.bind("<Escape>", lambda e: self._collapse())     # Esc 收起
+        pop.bind("<FocusOut>", lambda e: self._collapse())   # 切去别的程序收起
+        pop.bind("<Button-1>", lambda e: self._collapse())   # 点浮层空白处收起
 
-    def _collapse(self):
-        self.panel.pack_forget()
-        self._open = False
-
-    def _build_panel(self):
-        for c in self.panel.winfo_children():
+    def _fill_panel(self):
+        pop = self._pop
+        for c in pop.winfo_children():
             c.destroy()
-        box = tk.Frame(self.panel, bg=BORDER)
-        box.pack(fill="x")
-        inner = tk.Frame(box, bg=CARD2)
-        inner.pack(fill="x", padx=1, pady=1)
+        inner = tk.Frame(pop, bg=CARD2)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        wl = max(S(60), self.trig.winfo_width() - S(28))
         for v in self._values:
             row = tk.Label(inner, text=v, bg=CARD2, fg=TXT, font=self._font,
-                           anchor="w", padx=S(12), pady=S(6), cursor="hand2")
+                           anchor="w", padx=S(12), pady=S(6), cursor="hand2",
+                           wraplength=wl, justify="left")
             row.pack(fill="x")
             row.bind("<Enter>", lambda e, r=row: r.configure(bg=HOVER))
             row.bind("<Leave>", lambda e, r=row: r.configure(bg=CARD2))
             row.bind("<Button-1>", lambda e, v=v: self._choose(v))
+
+    def _collapse(self):
+        pop, self._pop = self._pop, None
+        if pop is not None and pop.winfo_exists():   # 单线程 Tk，无需 try/except 兜销毁竞态
+            pop.grab_release()
+            pop.destroy()
 
     def _choose(self, v):
         self._collapse()
@@ -660,6 +683,11 @@ class SettingsList(tk.Frame):
 _INNER = "#1c202a"      # 卡片里的"内嵌面板"底色（比 CARD 深一档），只在本模块内部用
 
 
+# 详情盒固定高度：实测六套内置方案最大 320（fv_4x / sv_max / mm_i2v），+16 冗余。
+# 两个分支（未选择 / 选中）都用同一个固定盒 —— 右栏需求恒定，上排高度才定得下来（v1.2.12）。
+WF_DETAIL_H = S(336)
+
+
 class WorkflowDetail(tk.Frame):
     """右栏工作流详情：铺开所选方案的节点步骤 + 输入输出 + 两个动作按钮。
 
@@ -691,10 +719,11 @@ class WorkflowDetail(tk.Frame):
         for c in self.winfo_children():
             c.destroy()
         self.pack(fill="x", pady=(S(12), 0))
-        box = tk.Frame(self, bg=BORDER)
-        box.pack(fill="x")
+        box = tk.Frame(self, bg=BORDER, height=WF_DETAIL_H)
+        box.pack(fill="x", pady=(S(12), 0))
+        box.pack_propagate(False)          # 固定高：内容装不下由渲染断言兜底
         inner = tk.Frame(box, bg=_INNER)
-        inner.pack(fill="x", padx=1, pady=1)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
 
         if wf is None and local_name is None:
             tk.Label(inner, text="选择一套内置工作流，或「加载 .json」选本地 ComfyUI 工作流，"

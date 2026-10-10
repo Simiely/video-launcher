@@ -41,7 +41,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.11"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.12"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -179,17 +179,19 @@ class App:
 
     # ---- 上排高度自适配（内容实测）----
     def _sync_top_height(self):
-        """把上排高度锁到「内容实际需求」，剩余高度全部让给下排运行日志。
+        """上排高度 = max(右栏工作流卡需求 + 冗余, 中栏服务卡+引擎卡需求)（v1.2.12）。
 
-        需求 = max(中栏引擎卡高度, 右栏「服务卡 + 工作流卡」高度)。
+        v1.2.12 前需求 = max(中栏舞台, 右栏"服务卡+工作流卡")：两卡叠高把整排撑大、
+        中栏下方空一片，下拉就地展开还会再跳。现在右栏只剩工作流卡、详情盒固定高
+        （WF_DETAIL_H，两个分支同高）→ 右栏需求不随选择变化，**右栏公式定基准**；
+        中栏只做兜底（FlashVSR 引擎卡比右栏定出的还高 ~77px，不兜底会藏住「运行放大」）。
+        中栏舞台 weight=1 吃剩余，内容超出就滚动，不再让下拉/选择牵着整排跳。
 
         **实测前必须先 update_idletasks()**：Tk 的几何计算是 idle 任务，刚 pack 完
         新内容时 winfo_reqheight() 还是旧值（实测：选中工作流后立刻读是 263，
         跑一次 idle 才是 500）—— 用旧值就会把卡片截断，而且没有任何后续事件会纠正它。
-
-        **只在内容变化时调用**（切引擎 / 选工作流 / 下拉展开收起）；
-        不能在 <Configure> 里无条件调用，否则"改 minsize → 触发 Configure → 再改 minsize"
-        会死循环。_syncing 再挡一层重入（update_idletasks 可能又触发 Configure）。
+        **不能在 <Configure> 里无条件调用**，否则"改 minsize → 触发 Configure → 再改"
+        会死循环；_syncing 再挡一层重入。
         """
         if not getattr(self, "_ui_ready", False) or self._syncing:
             return
@@ -197,13 +199,17 @@ class App:
         try:
             self.root.update_idletasks()
             # 右栏需求：取"最低那个子控件的底边"。用真实布局位置 + 自身需求高来算，
-            # 这样对 pack 的 pady / 卡片圆角内边距都免疫 —— 手工累加间距实测漏算 14px，
-            # 结果工作流卡被压矮、底部按钮掉出可视区。
+            # 对 pack/grid 的 pady / 卡片圆角内边距都免疫 —— 手工累加间距实测漏算过 14px。
             col_top = self.right_col.winfo_rooty()
             right = 0
             for child in self.right_col.winfo_children():
                 right = max(right, child.winfo_rooty() - col_top + child.winfo_reqheight())
-            need = max(self.stage.winfo_reqheight(), right, S(360))
+            # 中栏兜底：服务卡（恒定）+ 引擎卡需求。默认 FlashVSR 卡比右栏定出的高度
+            # 还高 ~77px，纯右栏定高会把「运行放大」压到折叠线以下（v1.2.5 修过的 bug），
+            # 故取两者较大 —— 只有中栏真装不下时才由中栏抬高整排。
+            mid = (self.svc_card.winfo_reqheight() + S(14)
+                   + self.stage.winfo_reqheight())
+            need = max(right + S(32), mid, S(360))
             if abs(need - self._top_need) > S(2):
                 self._top_need = need
                 self.app.rowconfigure(0, minsize=need)
@@ -222,14 +228,6 @@ class App:
 
         self.root.after_idle(run)
 
-    def _watch_expand(self, dd):
-        """下拉是"就地展开"（选项面板 pack 在卡片内部），展开会把卡片撑高。
-
-        不跟着调上排高度的话，展开的选项列表会把卡片下半部分挤出可视区。
-        <Configure> 里只做「置位 + after_idle 实测」，且实测前后有 2px 阈值去抖，
-        所以"改 minsize → 触发 Configure → 再改 minsize"不会形成死循环。
-        """
-        dd.bind("<Configure>", lambda e: self._schedule_top_sync())
 
     # ---- 左：导航 ----
     def _build_sidebar(self, parent):
@@ -247,7 +245,7 @@ class App:
             side="left", padx=(S(10), 0))
 
         # 导航只放「会切换中栏内容」的入口：三个引擎。
-        # 服务卡（右栏顶部）、工作流卡（右栏中部）、设置（左栏下方）都是常显区，不做导航项
+        # 服务卡（中栏顶部）、工作流卡（右栏）、设置（左栏下方）都是常显区，不做导航项
         self.nav_items = {}
         defs = [
             ("flashvsr", "FlashVSR", BLUE),
@@ -267,12 +265,15 @@ class App:
     def _build_center(self, parent):
         center = tk.Frame(parent, bg=BG)
         center.grid(row=0, column=1, sticky="nsew")
-        center.rowconfigure(0, weight=1)
+        center.rowconfigure(1, weight=1)      # 行 1 = 引擎舞台吃剩余（服务卡高度固定）
         center.columnconfigure(0, weight=1)
 
-        # 滚动舞台：服务卡已挪到右栏顶部、设置已挪到左栏下方，此处只剩引擎区
+        # 行 0：服务卡回到中栏顶部（v1.2.12），右栏只剩工作流卡 → 整排不再被两卡叠高撑大
+        self._build_service_card(center)
+
+        # 行 1：滚动舞台（引擎卡；内容超出就滚动，不再撑大整排）
         wrap = tk.Frame(center, bg=BG)
-        wrap.grid(row=0, column=0, sticky="nsew")
+        wrap.grid(row=1, column=0, sticky="nsew")
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
         self.stage_cv = tk.Canvas(wrap, bg=BG, highlightthickness=0, bd=0)
@@ -289,7 +290,7 @@ class App:
 
         self._build_engine_area(self.stage)
 
-    # ---- 工作流卡（右栏顶部，常显不滚动）----
+    # ---- 工作流卡（右栏唯一卡片，常显不滚动）----
     def _build_workflow_card(self, parent):
         card = RoundedFrame(parent, outer=BG, pad=(6, 6))
         # 它是右栏最后一个控件：底部不留间距，行与行之间的留白由日志行的 pady 提供
@@ -312,7 +313,6 @@ class App:
         self.wf_dd = Dropdown(b, self._wf_names(), command=self._on_wf_select,
                               outer=CARD, placeholder="— 请选择一套内置工作流 —", font=f(10))
         self.wf_dd.pack(fill="x", pady=(S(5), 0))
-        self._watch_expand(self.wf_dd)
         self.wf_nodes = tk.Label(b, text="未选择 · 共 %d 套内置" % len(WORKFLOWS),
                                  bg=CARD, fg=TXT2, font=f(8), anchor="w")
         self.wf_nodes.pack(fill="x", pady=(S(6), 0))
@@ -465,7 +465,6 @@ class App:
                                     font=f(10), height=S(34))
             self.fv_mode.pack(fill="x", pady=(0, S(12)))
             self.fv_mode.set("通用 · 动画")
-            self._watch_expand(self.fv_mode)
             self._field_label(b, "放大倍数")
             self.fv_scale = ChipRow(b, ["2x", "3x", "4x"], outer=CARD, default="2x",
                                     on_fill=meta["color"])
@@ -476,7 +475,6 @@ class App:
                                    outer=CARD, font=f(10), height=S(34))
             self.fv_fmt.pack(fill="x", pady=(0, S(12)))
             self.fv_fmt.set("video/h264-mp4")
-            self._watch_expand(self.fv_fmt)
             self.fv_auto = CheckBox(b, "服务没跑就自动拉起", on=True,
                                     outer=CARD, color=meta["color"])
             self.fv_auto.pack(fill="x", pady=(S(6), S(12)))
@@ -489,7 +487,6 @@ class App:
                                     font=f(10), height=S(34))
             self.sv_prof.pack(fill="x", pady=(0, S(12)))
             self.sv_prof.set("平衡 · 16g")
-            self._watch_expand(self.sv_prof)
             self._field_label(b, "目标短边")
             self.sv_res = ChipRow(b, ["720", "1080"], outer=CARD, default="1080",
                                   on_fill=meta["color"])
@@ -544,7 +541,7 @@ class App:
         link.bind("<Button-1>", lambda e: self._flash_wf())
 
     def _flash_wf(self):
-        """工作流卡固定在右栏顶部、不在滚动舞台里，所以用一次描边闪烁提示它在哪。"""
+        """工作流卡固定在右栏、不在滚动舞台里，所以用一次描边闪烁提示它在哪。"""
         self.wf_card.set_border(BLUE)
         self.root.after(500, lambda: self.wf_card.set_border(BORDER))
 
@@ -591,15 +588,17 @@ class App:
         self._schedule_top_sync()
         return None
 
-    # ---- 服务卡（右栏顶部，常显）----
+    # ---- 服务卡（中栏顶部，常显）----
     def _build_service_card(self, parent):
-        """ComfyUI 服务卡：原先在中栏置顶，v1.2.3 按要求挪到右栏、工作流卡上方。
+        """ComfyUI 服务卡：v1.2.3 挪去右栏，v1.2.12 按用户要求回到中栏顶部。
 
-        右栏 ~324 可用宽放不下一整行（圆点+标题+徽标+地址+三个按钮），
-        故拆成两行：状态行（左：圆点/标题/徽标，右：版本+显存）+ 地址行 + 按钮行。
+        右栏"服务卡 + 工作流卡"叠起来会把整排高度撑大、中栏下方空一片；
+        挪回宽的中栏后，四个按钮能排回一行且等大（统一 minwidth —— pack 的
+        expand 只平分多余空间，基础分配按各自请求宽，"停止队列任务"6 个字
+        比 4 字按钮天生宽两个字的量，不锁宽必然错位）。
         """
         card = RoundedFrame(parent, outer=BG, pad=(6, 6))
-        card.pack(fill="x", pady=(0, S(14)))
+        card.grid(row=0, column=0, sticky="ew", pady=(0, S(14)))
         self.svc_card = card
         b = card.body
 
@@ -621,30 +620,26 @@ class App:
                                 anchor="w")
         self.svc_url.pack(fill="x", pady=(S(7), S(9)))
 
-        # 按钮排两行：右栏只有 ~324 可用宽，四个挤一行时「停止队列任务」的文字会超出
-        # 按钮本身（6 个汉字 + 内边距实测要 ~100px，四个平分只剩 76px）。
+        # 四个按钮一行等大：内容不变 → 卡片高度恒定，不参与上排实测
         row = tk.Frame(b, bg=CARD)
         row.pack(fill="x")
         self.btn_primary = RButton(row, text="启动服务", command=self._primary_service,
                                    fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6,
-                                   stretch=True)
+                                   minwidth=112, stretch=True)
         self.btn_primary.pack(side="left", fill="x", expand=True)
         RButton(row, text="打开网页", command=self.open_web, fill=CARD2, fg=TXT,
-                outer=CARD, font=f(9), pady=6, stretch=True).pack(
-                    side="left", fill="x", expand=True, padx=(S(6), 0))
-
-        row2 = tk.Frame(b, bg=CARD)
-        row2.pack(fill="x", pady=(S(6), 0))
-        self.btn_stop = RButton(row2, text="停止服务", command=self.svc_stop, fill=CARD2,
+                outer=CARD, font=f(9), pady=6, minwidth=112, stretch=True).pack(
+                    side="left", fill="x", expand=True, padx=(S(8), 0))
+        self.btn_stop = RButton(row, text="停止服务", command=self.svc_stop, fill=CARD2,
                                 fg=TXT, outer=CARD, font=f(9), pady=6, state="disabled",
-                                stretch=True)
-        self.btn_stop.pack(side="left", fill="x", expand=True)
-        self.btn_queue = RButton(row2, text="停止队列任务", command=self.svc_stop_queue,
+                                minwidth=112, stretch=True)
+        self.btn_stop.pack(side="left", fill="x", expand=True, padx=(S(8), 0))
+        self.btn_queue = RButton(row, text="停止队列任务", command=self.svc_stop_queue,
                                  fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6,
-                                 state="disabled", stretch=True)
-        self.btn_queue.pack(side="left", fill="x", expand=True, padx=(S(6), 0))
+                                 state="disabled", minwidth=112, stretch=True)
+        self.btn_queue.pack(side="left", fill="x", expand=True, padx=(S(8), 0))
 
-    # ---- 右：服务卡（上）+ 工作流卡（下）----
+    # ---- 右：工作流卡（右栏唯一卡片）----
     def _build_right(self, parent):
         col = tk.Frame(parent, bg=BG)
         col.grid(row=0, column=2, sticky="nsew", padx=(S(14), 0))
@@ -652,10 +647,7 @@ class App:
         col.pack_propagate(False)
         self.right_col = col
 
-        # 上：ComfyUI 服务卡（常显）
-        self._build_service_card(col)
-
-        # 下：工作流卡（常显，不随中栏滚动）
+        # 工作流卡（常显，不随中栏滚动）。上排高度就由它定（见 _sync_top_height）
         self._build_workflow_card(col)
 
     # ---- 底：运行日志（v1.2.4 起横跨中栏 + 右栏，两列同宽）----
@@ -707,7 +699,7 @@ class App:
         参数 scroll=False 用于程序启动时——只选中默认引擎、不滚动。
 
         注：引擎切换只有左导航这一个入口（v1.2.3 去掉了中栏重复的切换按钮）；
-        服务卡（右栏顶部）、工作流卡（右栏中部）、设置（左栏下方）都是常显区，不做导航项。
+        服务卡（中栏顶部）、工作流卡（右栏）、设置（左栏下方）都是常显区，不做导航项。
         """
         for k, it in self.nav_items.items():
             it.set_active(k == key)
