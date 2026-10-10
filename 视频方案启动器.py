@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """视频方案启动器 —— ComfyUI 底座 + FlashVSR / SeedVR2 / MiniMax H3 一键启动。
 
-界面：深色 Fluent 三栏控制台（左＝导航 + 设置 / 中＝引擎参数 / 右＝服务 + 工作流 + 日志），
+界面：深色 Fluent 三栏控制台（左＝导航 + 设置 / 中＝引擎参数 / 右＝服务 + 工作流），
+      运行日志横跨中、右两列、压在两栏下方，
       纯 tkinter 自绘（圆角卡片 + 阴影 + 圆角按钮），零第三方依赖。
       设计蓝本见仓库分支 ui-redesign 的 redesign/video_launcher_sidebar.html。
 
@@ -116,8 +117,11 @@ class App:
         self.root = root
         root.title("视频方案启动器")
         root.configure(bg=BG)
-        root.geometry("%dx%d" % (S(1260), S(760)))   # 右栏放工作流卡后需要更宽（中栏 ~624 / 右栏 360）
-        root.minsize(S(1040), S(640))
+        # 尺寸是按"内容需求高度"倒推的：上排要同时容纳引擎卡(需 ~542)与右栏(服务卡 128 +
+        # 工作流卡含详情 483 + 间距)，下排日志 ~180 —— 取 900 高才有余量，少于 ~880 就会
+        # 把工作流卡的「推送/入队」按钮压到折叠线下（v1.2.4 实测踩过）
+        root.geometry("%dx%d" % (S(1260), S(900)))
+        root.minsize(S(1040), S(880))
 
         self.logq = queue.Queue()
         self.uiqueue = queue.Queue()    # 后台线程 → 主线程的回调队列（tkinter 非线程安全，禁止跨线程碰控件）
@@ -144,16 +148,18 @@ class App:
         app = tk.Frame(self.root, bg=BG)
         app.pack(fill="both", expand=True, padx=S(14), pady=S(14))
         app.columnconfigure(1, weight=1)
-        app.rowconfigure(0, weight=1)
+        app.rowconfigure(0, weight=1)              # 上排：左栏 / 中栏 / 右栏
+        app.rowconfigure(1, minsize=S(180))        # 下排：运行日志横跨中栏 + 右栏
 
-        self._build_sidebar(app)
-        self._build_center(app)
-        self._build_logpane(app)
+        self._build_sidebar(app)      # 左栏（跨两行，保持通高）
+        self._build_center(app)       # 中栏：引擎参数
+        self._build_right(app)        # 右栏：服务卡 + 工作流卡
+        self._build_logpane(app)      # 下排：运行日志（columnspan=2）
 
     # ---- 左：导航 ----
     def _build_sidebar(self, parent):
         side = RoundedFrame(parent, outer=BG, pad=(4, 8), radius=S(12))
-        side.grid(row=0, column=0, sticky="nsw", padx=(0, S(14)))
+        side.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, S(14)))
         side.configure(width=S(206))
         side.pack_propagate(False)
         b = side.body
@@ -512,21 +518,26 @@ class App:
                                 stretch=True)
         self.btn_stop.pack(side="left", fill="x", expand=True)
 
-    # ---- 右：服务（上）+ 工作流（中）+ 日志（下，占满剩余）----
-    def _build_logpane(self, parent):
+    # ---- 右：服务卡（上）+ 工作流卡（下）----
+    def _build_right(self, parent):
         col = tk.Frame(parent, bg=BG)
         col.grid(row=0, column=2, sticky="nsew", padx=(S(14), 0))
         col.configure(width=S(360))
         col.pack_propagate(False)
+        self.right_col = col
 
         # 上：ComfyUI 服务卡（常显）
         self._build_service_card(col)
 
-        # 中：工作流卡（常显，不随中栏滚动）
+        # 下：工作流卡（常显，不随中栏滚动）
         self._build_workflow_card(col)
 
-        # 下：日志卡（吃掉剩余高度）
-        pane = RoundedFrame(col, outer=BG, pad=(4, 4), radius=S(12))
+    # ---- 底：运行日志（v1.2.4 起横跨中栏 + 右栏，两列同宽）----
+    def _build_logpane(self, parent):
+        holder = tk.Frame(parent, bg=BG)
+        holder.grid(row=1, column=1, columnspan=2, sticky="nsew", pady=(S(14), 0))
+
+        pane = RoundedFrame(holder, outer=BG, pad=(4, 4), radius=S(12))
         pane.pack(fill="both", expand=True)
         b = pane.body
 
@@ -540,7 +551,8 @@ class App:
         clr.bind("<Button-1>", lambda e: self.clear_log())
         tk.Frame(b, height=1, bg=BORDER).pack(fill="x")
 
-        self.logtxt = tk.Text(b, bg=CARD, fg=TXT2, bd=0, highlightthickness=0,
+        # height=4 只是"请求高度"下限（让下排高度稳定在 minsize 附近），实际随容器拉伸
+        self.logtxt = tk.Text(b, bg=CARD, fg=TXT2, bd=0, highlightthickness=0, height=4,
                               wrap="word", font=mono(9), state="disabled", padx=0, pady=S(8),
                               selectbackground=CARD2, insertwidth=0, spacing1=1, spacing3=2)
         self.logtxt.pack(fill="both", expand=True)
