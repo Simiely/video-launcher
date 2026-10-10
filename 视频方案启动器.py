@@ -554,6 +554,8 @@ class App:
                 ("deploy_root", "部署脚本目录", True), ("ffmpeg_dir", "ffmpeg 目录", True),
                 ("input_dir", "输入目录", True), ("output_dir", "输出目录", True),
                 ("comfy_url", "服务地址", False)]
+        # 真实检测（v1.2.9）：路径项下面写的是实测结果 —— 就绪不打标，缺什么直接写明原因
+        marks = {k: rt.probe_path(CONFIG, k) for k, _, _ in keys}
         for k, label, is_dir in keys:
             row = tk.Frame(parent, bg=CARD)
             row.pack(fill="x", pady=(S(6), 0))
@@ -564,7 +566,9 @@ class App:
                 link.bind("<Enter>", lambda e, w=link: w.configure(fg=BLUE))
                 link.bind("<Leave>", lambda e, w=link: w.configure(fg=TXT2))
                 link.bind("<Button-1>", lambda e, p=CONFIG.get(k, ""): self._open_dir(p))
-            tk.Label(parent, text=CONFIG.get(k, ""), bg=CARD, fg=TXT, font=f(8), anchor="w",
+            path, ok, miss = marks[k]
+            tk.Label(parent, text=path + ("" if ok else "  ⚠️ " + miss), bg=CARD,
+                     fg=TXT if ok else AMBER, font=f(8), anchor="w",
                      justify="left", wraplength=S(168)).pack(fill="x")
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=(S(10), 0))
@@ -1170,10 +1174,8 @@ def main():
     app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     app.log("视频方案启动器已启动", "hi")
-    app.log("  ComfyUI 目录 : %s" % CONFIG["comfy_dir"])
-    app.log("  部署脚本目录 : %s" % CONFIG["deploy_root"])
-    app.log("  ffmpeg       : %s %s" % (CONFIG["ffmpeg_dir"],
-                                        "✅" if os.path.exists(os.path.join(CONFIG["ffmpeg_dir"], "ffmpeg.exe")) else "⚠️ 未找到"))
+    for _msg, _tag in rt.startup_lines(CONFIG):
+        app.log(_msg, _tag)
     root.mainloop()
 
 

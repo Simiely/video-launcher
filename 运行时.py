@@ -4,8 +4,8 @@
 单独成模块的原因很具体：
   * AGENTS 的硬约定是「单文件逻辑行超过 1000 就拆」—— 主文件加上 v1.2.5 的
     崩溃落盘、上排高度自适配，以及 v1.2.6 的日志清洗后到了 1000 出头，必须拆；
-  * 这里的五样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON / 日志行解析 / 日志落盘）
-    跟 tkinter 毫无关系：塞进 ui_kit 会污染"自绘控件库"的职责，
+  * 这里的六样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON / 日志行解析 /
+    日志落盘 / 启动自检）跟 tkinter 毫无关系：塞进 ui_kit 会污染"自绘控件库"的职责，
     留在主文件又挤占业务装配的位置。
 
 依赖单向：本模块只用标准库，**不 import 业务代码，也不 import ui_kit**。
@@ -13,6 +13,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -274,3 +275,56 @@ class NoopLog:
 
     def close(self):
         """开关关闭：无句柄需关。"""
+
+
+# ================================================================ 启动自检：真实检测
+# 把路径"打印"出来不等于"检查过"：路径拼错了、盘符变了、目录建了但里面是空的 ——
+# 打印出来都一样好看。所以这里逐项**真的去查**，而且查到"能力级"而不是"目录级"：
+# 目录在、但 ComfyUI 没克隆完（缺 main.py）、部署脚本没铺进去（缺引擎子目录），
+# 是最常见的半成品状态；只看目录在不在，就会给出假绿灯。
+# 自检表：配置键 → 日志里的名字 → 必须存在的子项 → PATH 上可替代的可执行名（空＝无）
+STARTUP_PROBES = (
+    ("comfy_dir", "ComfyUI 目录", ("main.py",), ""),
+    ("comfy_py", "ComfyUI Python", (), ""),
+    ("deploy_root", "部署脚本目录", ("02-FlashVSR", "03-SeedVR2"), ""),
+    ("ffmpeg_dir", "ffmpeg", ("ffmpeg.exe",), "ffmpeg"),
+    ("input_dir", "输入目录", (), ""),
+    ("output_dir", "输出目录", (), ""),
+)
+_PROBE_BY_KEY = {p[0]: p for p in STARTUP_PROBES}
+
+
+def _alt_hint(spec):
+    """本目录里缺东西时，提一句系统 PATH 上是否另有一份（好照着拷过去）。"""
+    found = shutil.which(spec[3]) if spec[3] else None
+    return "（系统 PATH 上有：%s）" % found if found else ""
+
+
+def probe_path(cfg, key):
+    """真实检测配置里的某一项，返回 (路径, 是否就绪, 缺什么)。
+
+    "缺什么"为空串表示就绪，否则是一句能照着做的话（"路径不存在" / "缺 main.py"）。
+    不在自检表里的键（如服务地址）无从检测，一律按就绪处理。
+    """
+    path = str(cfg.get(key, "") or "")
+    spec = _PROBE_BY_KEY.get(key)
+    if spec is None:
+        return path, True, ""
+    if not path:
+        return path, False, "未配置"
+    if not os.path.exists(path):
+        return path, False, "路径不存在" + _alt_hint(spec)
+    for need in spec[2]:
+        if not os.path.exists(os.path.join(path, need)):
+            return path, False, "缺 " + need + _alt_hint(spec)
+    return path, True, ""
+
+
+def startup_lines(cfg):
+    """逐项真实检测，返回可直接写进日志的 [(文本, 着色标签)]。"""
+    out = []
+    for key, label, _needs, _exe in STARTUP_PROBES:
+        path, ok, miss = probe_path(cfg, key)
+        out.append(("  %s : %s %s" % (label, path, "✅" if ok else "⚠️ " + miss),
+                    "ok" if ok else "warn"))
+    return out
