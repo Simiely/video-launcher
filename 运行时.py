@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import urllib.request
+import webbrowser
 
 # ================================================================ 子进程：别弹黑窗
 # 关键：本程序打包成 exe 时是「无控制台窗口」（console=False）的 GUI 程序。
@@ -320,11 +321,184 @@ def probe_path(cfg, key):
     return path, True, ""
 
 
+def probe_line(cfg, key):
+    """单项自检，返回 (文本, 着色标签) —— 与启动日志同一格式，改完设置当场复用它。"""
+    spec = _PROBE_BY_KEY.get(key)
+    label = spec[1] if spec else key
+    path, ok, miss = probe_path(cfg, key)
+    return ("  %s : %s %s" % (label, path, "✅" if ok else "⚠️ " + miss),
+            "ok" if ok else "warn")
+
+
 def startup_lines(cfg):
     """逐项真实检测，返回可直接写进日志的 [(文本, 着色标签)]。"""
+    return [probe_line(cfg, key) for key, _label, _needs, _exe in STARTUP_PROBES]
+
+
+# ================================================================ 设置项：展示 / 修改
+# 设置区既要"看得见"（打开）也要"改得动"（修改），这两件事的**数据与语义**都在这里，
+# 界面层只负责画。分开的原因：这些都是路径 / JSON / 进程环境逻辑，跟 tkinter 无关。
+# 每项 = (配置键, 界面上的名字, 类型)。类型决定「浏览…」弹什么、以及怎么"打开"：
+#   dir  → 选目录 / 资源管理器打开目录
+#   file → 选文件 / 资源管理器打开并选中
+#   url  → 纯文本     / 浏览器打开
+CONFIG_FIELDS = (
+    ("comfy_dir",   "ComfyUI 目录",    "dir"),
+    ("comfy_py",    "ComfyUI Python",  "file"),
+    ("deploy_root", "部署脚本目录",     "dir"),
+    ("ffmpeg_dir",  "ffmpeg 目录",      "dir"),
+    ("input_dir",   "输入目录",         "dir"),
+    ("output_dir",  "输出目录",         "dir"),
+    ("comfy_url",   "服务地址",         "url"),
+)
+
+
+def field_label(key):
+    """配置键 → 界面上显示的名字（不认识就原样返回键名）。"""
+    return next((lab for k, lab, _t in CONFIG_FIELDS if k == key), key)
+
+
+def field_kind(key):
+    """配置键 → 类型（dir / file / url）；不在表里的按目录处理。"""
+    return next((t for k, _lab, t in CONFIG_FIELDS if k == key), "dir")
+
+
+def config_items(cfg):
+    """设置面板要的数据：路径、显示名、类型、实测结论（note 空串＝就绪）。
+
+    实测结论直接来自 probe_path —— 设置面板与启动日志因此共用同一份判断，
+    不存在"日志说缺失、面板说就绪"这种两边不一致。
+    """
     out = []
-    for key, label, _needs, _exe in STARTUP_PROBES:
+    for key, label, kind in CONFIG_FIELDS:
         path, ok, miss = probe_path(cfg, key)
-        out.append(("  %s : %s %s" % (label, path, "✅" if ok else "⚠️ " + miss),
-                    "ok" if ok else "warn"))
+        out.append({"key": key, "label": label, "value": path, "kind": kind,
+                    "note": "" if ok else miss})
     return out
+
+
+def save_config(path, updates):
+    """把若干配置键合并写回 JSON；成功返回 None，失败返回原因串。
+
+    **合并而非覆盖**：文件里原有的其它键（`_说明`、用户自己加的备注）都保留 ——
+    启动器只该改用户点过的那几项，不该把「只保留需要改的键」的配置文件越写越满。
+    """
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+        except Exception as e:
+            return "读取现有配置失败：%s" % e
+    data.update(updates)
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+    except Exception as e:
+        return "写入配置失败：%s" % e
+    return None
+
+
+def open_path(kind, path):
+    """按类型打开：url→浏览器、file→选中该文件、dir→打开目录。返回 False＝路径不存在。"""
+    path = str(path or "")
+    if not path:
+        return False
+    if kind == "url":
+        webbrowser.open(path)
+        return True
+    if kind == "file" and os.path.isfile(path):
+        # /select, 必须与路径分成两个参数；且 explorer 只认反斜杠路径
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)],
+                         creationflags=NO_WINDOW)
+        return True
+    if os.path.isdir(path):
+        os.startfile(path)
+        return True
+    return False
+
+
+def comfy_env(cfg, base=None):
+    """子进程环境：ffmpeg 目录前置到 PATH（不依赖注册表），并统一 UTF-8 文本 IO。"""
+    env = dict(os.environ if base is None else base)
+    ff = str(cfg.get("ffmpeg_dir", "") or "")
+    if ff:
+        env["PATH"] = ff + os.pathsep + env.get("PATH", "")
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def gpu_by_nvidia_smi():
+    """ComfyUI 没起来时退而求其次，用 nvidia-smi 读显存。
+
+    返回 (文本, 本机是否有 nvidia-smi)：可用=False 时调用方应停止每 5 秒再试 ——
+    反复 spawn 子进程既浪费，也是杀软启发式扫描爱盯的行为。显存只是锦上添花，
+    一切失败都静默降级（返回空文本）。
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=8, creationflags=NO_WINDOW)
+    except FileNotFoundError:
+        return "", False
+    except Exception:          # 超时 / 被杀：降级即可，不该影响探测循环
+        return "", True
+    if r.returncode != 0:      # 驱动异常时 stdout 是空的；显式判掉，不靠 IndexError 兜底
+        return "", True
+    try:
+        used, total = r.stdout.strip().splitlines()[0].split(",")
+        return "显存 %.1f/%.1fG" % (int(used) / 1024, int(total) / 1024), True
+    except (IndexError, ValueError):     # 输出格式变了（换驱动/多卡）：当次拿不到而已
+        return "", True
+
+
+def check_input(path, name="输入"):
+    """批量任务的输入校验：返回 (路径, 错误文案)。错误文案为空串表示可用。"""
+    p = str(path or "").strip().strip('"')
+    if not p:
+        return "", "请先选择 %s 的输入视频 / 文件夹" % name
+    if not os.path.exists(p):
+        return p, "路径不存在：%s" % p
+    return p, ""
+
+
+# ================================================================ 内置工作流清单
+# 纯数据（界面上的展示字段 + 节点步骤），不含颜色等界面令牌 —— 所以留在这里，
+# 而不是跟配色一起放在主文件里占地方。
+WORKFLOWS = [
+    {"id": "fv_2x", "engine": "flashvsr", "name": "FlashVSR · 通用 2x 放大",
+     "desc": "通用超分，适合写实/日常视频，输出 2 倍分辨率。",
+     "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=2"),
+               ("(可选) 帧插值", "fps×2"), ("SaveVideo", "output_dir")],
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+    {"id": "fv_4x", "engine": "flashvsr", "name": "FlashVSR · 动画 4x 放大",
+     "desc": "针对动画/二次元优化，输出 4 倍分辨率，细节更锐。",
+     "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=4"),
+               ("CAS 锐化", "strength=0.4"), ("SaveVideo", "output_dir")],
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+    {"id": "sv_std", "engine": "seedvr2", "name": "SeedVR2 · 标准 1080p",
+     "desc": "标准档，短边缩放到 1080，速度与质量平衡。",
+     "steps": [("LoadVideo", "input_dir"), ("SeedVR2 标准档", "tile=512"),
+               ("Resize 短边", "1080"), ("SaveVideo", "output_dir")],
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+    {"id": "sv_max", "engine": "seedvr2", "name": "SeedVR2 · 极致 原画",
+     "desc": "极致档，保留原画分辨率，显存占用高、最慢。",
+     "steps": [("LoadVideo", "input_dir"), ("SeedVR2 极致档", "tile=384"),
+               ("FaceRestore", "on"), ("SaveVideo", "output_dir")],
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+    {"id": "mm_t2v", "engine": "minimax", "name": "MiniMax H3 · 文生视频 T2V",
+     "desc": "用提示词直接生成视频（Text-to-Video）。",
+     "steps": [("TextEncode", "prompt"), ("MiniMax H3", "T2V"),
+               ("VAEDecode", ""), ("SaveVideo", "output_dir")],
+     "inN": "0（纯文本）", "outN": "1 × SaveVideo"},
+    {"id": "mm_i2v", "engine": "minimax", "name": "MiniMax H3 · 图生视频 I2V",
+     "desc": "以首帧图片驱动生成视频（Image-to-Video）。",
+     "steps": [("LoadImage", "first_frame"), ("MiniMax H3", "I2V"),
+               ("VAEDecode", ""), ("SaveVideo", "output_dir")],
+     "inN": "1 × LoadImage", "outN": "1 × SaveVideo"},
+]

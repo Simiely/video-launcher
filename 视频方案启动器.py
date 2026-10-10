@@ -59,8 +59,13 @@ if os.path.exists(_cfg_path):                       # 允许用同名 JSON 覆�
     except Exception as e:
         print("配置文件读取失败，用默认值：", e)
 
-FLASHVSR_PS = os.path.join(CONFIG["deploy_root"], "02-FlashVSR", "批量放大.ps1")
-SEEDVR2_PS  = os.path.join(CONFIG["deploy_root"], "03-SeedVR2", "批量放大.ps1")
+def engine_ps(engine):
+    """引擎批量放大脚本的路径。
+
+    做成函数而不是模块级常量：用户在设置里改了 deploy_root 之后要立刻生效，
+    常量则会一直指向启动时的那份（改了等于没改，下次点运行还是老路径）。
+    """
+    return os.path.join(CONFIG["deploy_root"], engine, "批量放大.ps1")
 
 ps_quote = rt.ps_quote            # 命令串转义（实现在 运行时.py，别名保留以便调用/测试）
 NO_WINDOW = rt.NO_WINDOW          # 子进程"不弹黑窗"标记（GUI 程序里每个 Popen 都要带）
@@ -75,38 +80,9 @@ ENG = {
     "minimax":  {"color": TEAL, "label": "MiniMax H3", "avatar": "M"},
 }
 
-WORKFLOWS = [
-    {"id": "fv_2x", "engine": "flashvsr", "name": "FlashVSR · 通用 2x 放大",
-     "desc": "通用超分，适合写实/日常视频，输出 2 倍分辨率。",
-     "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=2"),
-               ("(可选) 帧插值", "fps×2"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
-    {"id": "fv_4x", "engine": "flashvsr", "name": "FlashVSR · 动画 4x 放大",
-     "desc": "针对动画/二次元优化，输出 4 倍分辨率，细节更锐。",
-     "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=4"),
-               ("CAS 锐化", "strength=0.4"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
-    {"id": "sv_std", "engine": "seedvr2", "name": "SeedVR2 · 标准 1080p",
-     "desc": "标准档，短边缩放到 1080，速度与质量平衡。",
-     "steps": [("LoadVideo", "input_dir"), ("SeedVR2 标准档", "tile=512"),
-               ("Resize 短边", "1080"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
-    {"id": "sv_max", "engine": "seedvr2", "name": "SeedVR2 · 极致 原画",
-     "desc": "极致档，保留原画分辨率，显存占用高、最慢。",
-     "steps": [("LoadVideo", "input_dir"), ("SeedVR2 极致档", "tile=384"),
-               ("FaceRestore", "on"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
-    {"id": "mm_t2v", "engine": "minimax", "name": "MiniMax H3 · 文生视频 T2V",
-     "desc": "用提示词直接生成视频（Text-to-Video）。",
-     "steps": [("TextEncode", "prompt"), ("MiniMax H3", "T2V"),
-               ("VAEDecode", ""), ("SaveVideo", "output_dir")],
-     "inN": "0（纯文本）", "outN": "1 × SaveVideo"},
-    {"id": "mm_i2v", "engine": "minimax", "name": "MiniMax H3 · 图生视频 I2V",
-     "desc": "以首帧图片驱动生成视频（Image-to-Video）。",
-     "steps": [("LoadImage", "first_frame"), ("MiniMax H3", "I2V"),
-               ("VAEDecode", ""), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadImage", "outN": "1 × SaveVideo"},
-]
+# 内置工作流清单是纯数据（展示字段 + 节点步骤），已下沉到 运行时.py；
+# 这里只留一个名字，其它地方照旧写 WORKFLOWS，改动面最小。
+WORKFLOWS = rt.WORKFLOWS
 
 
 # 崩溃日志：GUI 程序没有 stderr，出异常时窗口一闪就没了、什么也看不到。
@@ -546,30 +522,17 @@ class App:
     def _build_settings_section(self, parent):
         """设置常驻左栏下方（v1.2.3）：不再做成「点导航 → 中栏单独刷出设置页」。
 
-        左栏可用宽只有 ~174px，所以每项拆两行：标签行（右侧挂「打开」链接）+ 值行（自动换行）。
+        左栏可用宽只有 ~174px，所以每项拆两行：标签行（右侧「打开」「修改」）+ 值行（自动换行）。
+        v1.2.10 起还能改：点「修改」或直接点值行 → 弹输入框，保存后写回程序同目录的
+        「启动器配置.json」、当场重测并刷新显示（不必重启程序）。渲染在 ui_kit.SettingsList，
+        项数据（含实测结论）来自 运行时.config_items —— 与启动日志同一份判断。
         """
         tk.Label(parent, text="设置", bg=CARD, fg=TXT2, font=f(9), anchor="w").pack(
             fill="x", padx=S(2), pady=(0, S(2)))
-        keys = [("comfy_dir", "ComfyUI 目录", True), ("comfy_py", "ComfyUI Python", False),
-                ("deploy_root", "部署脚本目录", True), ("ffmpeg_dir", "ffmpeg 目录", True),
-                ("input_dir", "输入目录", True), ("output_dir", "输出目录", True),
-                ("comfy_url", "服务地址", False)]
-        # 真实检测（v1.2.9）：路径项下面写的是实测结果 —— 就绪不打标，缺什么直接写明原因
-        marks = {k: rt.probe_path(CONFIG, k) for k, _, _ in keys}
-        for k, label, is_dir in keys:
-            row = tk.Frame(parent, bg=CARD)
-            row.pack(fill="x", pady=(S(6), 0))
-            tk.Label(row, text=label, bg=CARD, fg=TXT2, font=f(8), anchor="w").pack(side="left")
-            if is_dir:
-                link = tk.Label(row, text="打开", bg=CARD, fg=TXT2, font=f(8), cursor="hand2")
-                link.pack(side="right")
-                link.bind("<Enter>", lambda e, w=link: w.configure(fg=BLUE))
-                link.bind("<Leave>", lambda e, w=link: w.configure(fg=TXT2))
-                link.bind("<Button-1>", lambda e, p=CONFIG.get(k, ""): self._open_dir(p))
-            path, ok, miss = marks[k]
-            tk.Label(parent, text=path + ("" if ok else "  ⚠️ " + miss), bg=CARD,
-                     fg=TXT if ok else AMBER, font=f(8), anchor="w",
-                     justify="left", wraplength=S(168)).pack(fill="x")
+        self.settings = ui_kit.SettingsList(parent, rt.config_items(CONFIG), outer=CARD,
+                                            on_open=self._setting_open,
+                                            on_save=self._setting_save)
+        self.settings.pack(fill="x")
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=(S(10), 0))
         RButton(row, text="打开输入", command=lambda: self._open_dir(CONFIG["input_dir"]),
@@ -578,6 +541,25 @@ class App:
         RButton(row, text="打开输出", command=lambda: self._open_dir(CONFIG["output_dir"]),
                 fill=CARD2, fg=TXT, outer=CARD, font=f(8), pady=5,
                 stretch=True).pack(side="left", fill="x", expand=True, padx=(S(6), 0))
+
+    def _setting_open(self, key):
+        """打开某一项：目录→资源管理器、文件→选中该文件、地址→浏览器（见 运行时.open_path）。"""
+        if not rt.open_path(rt.field_kind(key), CONFIG.get(key, "")):
+            messagebox.showwarning("打不开", CONFIG.get(key, "") or "（未配置）")
+
+    def _setting_save(self, key, value):
+        """写回配置文件并当场重测。返回错误串＝没存成（界面据此弹框并保持原显示）。"""
+        err = rt.save_config(_cfg_path, {key: value})
+        if err:
+            return err
+        CONFIG[key] = value
+        if key == "comfy_url":                     # 服务卡上的地址跟着改，别显示成旧的
+            self.svc_url.configure(text=value)
+        self.log("[设置] %s = %s" % (rt.field_label(key), value), "hi")
+        self.log(*rt.probe_line(CONFIG, key))      # 立刻复检：路径填错当场就能看见
+        self.settings.set_items(rt.config_items(CONFIG))
+        self._schedule_top_sync()
+        return None
 
     # ---- 服务卡（右栏顶部，常显）----
     def _build_service_card(self, parent):
@@ -779,9 +761,7 @@ class App:
             var.set(p)
 
     def _open_dir(self, d):
-        if os.path.isdir(d):
-            os.startfile(d)
-        else:
+        if not rt.open_path("dir", d):
             messagebox.showwarning("目录不存在", d)
 
     # ================================================================ 日志
@@ -862,10 +842,7 @@ class App:
 
     # ================================================================ 服务
     def _comfy_env(self):
-        env = dict(os.environ)
-        env["PATH"] = CONFIG["ffmpeg_dir"] + os.pathsep + env.get("PATH", "")
-        env["PYTHONIOENCODING"] = "utf-8"
-        return env
+        return rt.comfy_env(CONFIG)      # 拼装在 运行时.py：ffmpeg 前置 PATH + UTF-8 文本 IO
 
     def comfy_alive(self):
         """本机 ComfyUI 是否在跑（绕开系统代理，见 运行时.http_json）。"""
@@ -1029,12 +1006,9 @@ class App:
         self.uiqueue.put(lambda: self._set_task_ui(False))
 
     def _get_input(self, name):
-        p = self.in_var.get().strip().strip('"')
-        if not p:
-            messagebox.showwarning("缺输入", "请先选择 %s 的输入视频/文件夹" % name)
-            return None
-        if not os.path.exists(p):
-            messagebox.showwarning("路径不存在", p)
+        p, err = rt.check_input(self.in_var.get(), name)
+        if err:
+            messagebox.showwarning("输入无效", err)
             return None
         return p
 
@@ -1050,7 +1024,7 @@ class App:
         if self.fv_auto.get():
             args.append("-AutoStart")
         self._run_ps("FlashVSR 放大（%s / %sx）" % (self.fv_mode.value, scale),
-                     FLASHVSR_PS, args)
+                     engine_ps("02-FlashVSR"), args)
 
     def run_seedvr2(self):
         p = self._get_input("SeedVR2")
@@ -1062,7 +1036,7 @@ class App:
         if self.sv_over.get():
             args.append("-Overwrite")
         self._run_ps("SeedVR2 放大（%s 档 / 短边 %s）" % (prof, self.sv_res.value),
-                     SEEDVR2_PS, args)
+                     engine_ps("03-SeedVR2"), args)
 
     # ================================================================ 后台探测
     def _probe_loop(self):
@@ -1119,28 +1093,16 @@ class App:
         self.btn_stop.set_state("normal" if own else "disabled")
 
     def _gpu_by_nvidia_smi(self):
-        """ComfyUI 没起来时退而求其次，用 nvidia-smi 读显存。
+        """读显存（解析在 运行时.gpu_by_nvidia_smi）。
 
         本机没有 nvidia-smi 就记住，别每 5 秒白起一个进程 —— 反复 spawn 子进程
         既浪费，也是杀软启发式扫描喜欢盯的行为。
         """
         if not self._nvsmi_ok:
             return ""
-        try:
-            r = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used,memory.total",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=8, creationflags=NO_WINDOW)
-        except FileNotFoundError:              # 本机没装 → 记住，别再每 5 秒白起进程
-            self._nvsmi_ok = False
-            return ""
-        except Exception:                      # 超时 / 被杀：显存只是锦上添花，静默降级即可
-            return ""
-        if r.returncode != 0:                  # 驱动异常时 stdout 是空的；显式判掉，不靠 IndexError 兜底
-            return ""
-        u, t = r.stdout.strip().splitlines()[0].split(",")
-        return "显存 %.1f/%.1fG" % (int(u) / 1024, int(t) / 1024)
+        text, ok = rt.gpu_by_nvidia_smi()
+        self._nvsmi_ok = ok
+        return text
 
     # ================================================================ 退出
     def on_close(self):

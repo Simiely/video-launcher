@@ -13,8 +13,9 @@
 
 约定：本模块不 import 任何业务代码，只提供「设计令牌 + 几何/颜色工具 + 控件」。
 """
+import os
 import tkinter as tk
-from tkinter import font as tkfont
+from tkinter import filedialog, font as tkfont, messagebox
 
 # ---------------------------------------------------------------- 设计令牌（深色 Fluent）
 BG       = "#15171c"   # 页面底色
@@ -491,6 +492,169 @@ class ProgressBar(tk.Canvas):
         if fw > 1:
             self.create_polygon(round_pts(0, 0, fw, h, r), smooth=True,
                                 fill=self._bar, outline=self._bar)
+
+
+# ---------------------------------------------------------------- 弹窗 / 设置列表
+def _center_on_parent(win, parent):
+    """把弹窗摆到父窗口中间；父窗口还没映射时退回屏幕左上偏中。"""
+    try:
+        win.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        if pw > 1 and ph > 1:
+            win.geometry("+%d+%d" % (parent.winfo_rootx() + (pw - win.winfo_reqwidth()) // 2,
+                                     parent.winfo_rooty() + (ph - win.winfo_reqheight()) // 3))
+            return
+    except Exception:
+        pass      # 拿不到父窗口几何（启动瞬间 / 已销毁）：退回默认位置即可，
+                  # 弹窗只是"位置差点"，不值得为它中断保存流程
+    win.geometry("+%d+%d" % (S(320), S(220)))
+
+
+HINTS = {
+    "dir": "填完整的目录路径，也可以点「浏览…」选一个。保存后立即生效，并写回程序同目录的"
+           "「启动器配置.json」。",
+    "file": "填完整的文件路径，也可以点「浏览…」选一个。",
+    "url": "填服务地址，例如 http://127.0.0.1:8188。",
+}
+
+
+def ask_text(parent, title, value="", *, hint="", browse=None):
+    """模态输入弹窗（输入框 + 可选「浏览…」+ 取消/保存）。返回新文本，取消返回 None。
+
+    browse: "dir" 选目录 / "file" 选文件 / None 纯文本。
+    返回前会把首尾空白和误粘的引号去掉 —— Windows 上「复制为路径」带着双引号，
+    直接拿去拼 PATH 会得到一条不存在的路径。
+    """
+    top = tk.Toplevel(parent)
+    top.title(title)
+    top.configure(bg=CARD)
+    top.resizable(False, False)
+
+    box = tk.Frame(top, bg=CARD)
+    box.pack(fill="both", expand=True, padx=S(18), pady=S(16))
+    tk.Label(box, text=title, bg=CARD, fg=TXT, font=f(10, True), anchor="w").pack(fill="x")
+    if hint:
+        tk.Label(box, text=hint, bg=CARD, fg=TXT2, font=f(8), anchor="w", justify="left",
+                 wraplength=S(400)).pack(fill="x", pady=(S(4), S(10)))
+
+    row = tk.Frame(box, bg=CARD)
+    row.pack(fill="x")
+    var = tk.StringVar(value=value or "")
+    ent = tk.Entry(row, textvariable=var, bg=CARD2, fg=TXT, font=f(10), width=46,
+                   insertbackground=TXT, relief="flat", highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=BLUE)
+    ent.pack(side="left", fill="x", expand=True, ipady=S(6))
+
+    def _browse():
+        cur = var.get().strip().strip('"')
+        kw = {"parent": top}
+        if os.path.isdir(cur):
+            kw["initialdir"] = cur
+        elif os.path.dirname(cur) and os.path.isdir(os.path.dirname(cur)):
+            kw["initialdir"] = os.path.dirname(cur)      # 文件项：从它所在目录开始
+        p = (filedialog.askdirectory(**kw) if browse == "dir"
+             else filedialog.askopenfilename(**kw))
+        if p:
+            var.set(os.path.normpath(p))                 # 统一成反斜杠，别混用 / 与 \
+
+    if browse:
+        RButton(row, text="浏览…", command=_browse, fill=CARD2, fg=TXT, outer=CARD,
+                font=f(9), pady=6).pack(side="left", padx=(S(8), 0))
+
+    got = {"v": None}
+
+    def _save(_=None):
+        got["v"] = var.get().strip().strip('"')
+        top.destroy()
+
+    btns = tk.Frame(box, bg=CARD)
+    btns.pack(fill="x", pady=(S(14), 0))
+    RButton(btns, text="取消", command=top.destroy, fill=CARD2, fg=TXT2, outer=CARD,
+            font=f(9), pady=7, stretch=True).pack(side="left", fill="x", expand=True)
+    RButton(btns, text="保存", command=_save, fill=BLUE, fg=DARKTX, border=None,
+            outer=CARD, font=f(9, True), pady=7, stretch=True).pack(
+                side="left", fill="x", expand=True, padx=(S(8), 0))
+
+    ent.bind("<Return>", _save)
+    top.bind("<Escape>", lambda e: top.destroy())
+    top.protocol("WM_DELETE_WINDOW", top.destroy)
+    _center_on_parent(top, parent.winfo_toplevel())
+    ent.focus_set()
+    ent.selection_range(0, "end")
+    top.grab_set()                     # 模态：弹窗期间不许再点主窗口（否则可能改到一半又点开一个）
+    parent.wait_window(top)            # 等它关；期间 Tk 继续跑事件循环，root.after 心跳不受影响
+    return got["v"]
+
+
+class SettingsList(tk.Frame):
+    """左栏窄栏用的设置项列表：每项两行（标签行 + 值行），每项都能打开、都能改。
+
+    数据驱动，界面不自己判断路径对不对 —— items 由 运行时.config_items() 给出：
+      * note 非空 = 未就绪：值行整行转琥珀色，并把原因（缺 main.py 等）跟在路径后面；
+      * 「打开」→ on_open(key)，怎么打开由业务层按类型决定；
+      * 「修改」/ 点值行 → 弹输入框；保存后调 on_save(key, 新值)，
+        返回错误串（写配置失败）时弹错误框且显示保持原样。
+    """
+
+    def __init__(self, master, items, *, outer=CARD, on_open=None, on_save=None):
+        super().__init__(master, bg=outer)
+        self._outer = outer
+        self._items = []
+        self.on_open = on_open
+        self.on_save = on_save
+        self.set_items(items)
+
+    def set_items(self, items):
+        """整体重画。项数只有个位，重画比逐项打补丁可靠（也不用管哪项变了）。"""
+        self._items = list(items)
+        for w in self.winfo_children():
+            w.destroy()
+        for it in self._items:
+            self._add_row(it)
+
+    def _add_row(self, it):
+        note = it.get("note", "")
+        row = tk.Frame(self, bg=self._outer)
+        row.pack(fill="x", pady=(S(6), 0))
+        tk.Label(row, text=it["label"], bg=self._outer, fg=TXT2, font=f(8),
+                 anchor="w").pack(side="left")
+        # 先摆「修改」再摆「打开」：side="right" 从右往左排，视觉上才是「打开 修改」
+        self._link(row, "修改", lambda k=it["key"]: self._edit(k))
+        self._link(row, "打开", lambda k=it["key"]: self._call(self.on_open, k))
+
+        line = tk.Frame(self, bg=self._outer)
+        line.pack(fill="x")
+        lab = tk.Label(line, text=it["value"] + ("" if not note else "  ⚠️ " + note),
+                       bg=self._outer, fg=(AMBER if note else TXT), font=f(8), anchor="w",
+                       justify="left", wraplength=S(168), cursor="hand2")
+        lab.pack(side="left", fill="x", expand=True)
+        lab.bind("<Button-1>", lambda e, k=it["key"]: self._edit(k))
+        lab.bind("<Enter>", lambda e, w=lab: w.configure(fg=BLUE))
+        lab.bind("<Leave>", lambda e, w=lab, n=note: w.configure(fg=(AMBER if n else TXT)))
+
+    def _link(self, parent, text, cmd):
+        lab = tk.Label(parent, text=text, bg=self._outer, fg=TXT2, font=f(8), cursor="hand2")
+        lab.pack(side="right", padx=(S(8), 0))
+        lab.bind("<Enter>", lambda e, w=lab: w.configure(fg=BLUE))
+        lab.bind("<Leave>", lambda e, w=lab: w.configure(fg=TXT2))
+        lab.bind("<Button-1>", lambda e: cmd())
+
+    def _call(self, fn, *args):
+        if fn:
+            fn(*args)
+
+    def _edit(self, key):
+        it = next((x for x in self._items if x["key"] == key), None)
+        if it is None or not self.on_save:
+            return
+        new = ask_text(self.winfo_toplevel(), "修改 · " + it["label"], it["value"],
+                       hint=HINTS.get(it["kind"], ""),
+                       browse=it["kind"] if it["kind"] in ("dir", "file") else None)
+        if new is None or new == it["value"]:      # 取消 / 没改动：什么都不做
+            return
+        err = self.on_save(key, new)
+        if err:
+            messagebox.showerror("保存失败", err, parent=self.winfo_toplevel())
 
 
 # ---------------------------------------------------------------- 启动期基础设施
