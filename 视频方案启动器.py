@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """视频方案启动器 —— ComfyUI 底座 + FlashVSR / SeedVR2 / MiniMax H3 一键启动。
 
-界面：深色 Fluent 三栏控制台（左导航 / 中内容 / 右日志），
+界面：深色 Fluent 三栏控制台（左导航 / 中内容 / 右栏＝工作流卡 + 运行日志），
       纯 tkinter 自绘（圆角卡片 + 阴影 + 圆角按钮），零第三方依赖。
       设计蓝本见仓库分支 ui-redesign 的 redesign/video_launcher_sidebar.html。
 
@@ -116,8 +116,8 @@ class App:
         self.root = root
         root.title("视频方案启动器")
         root.configure(bg=BG)
-        root.geometry("%dx%d" % (S(1180), S(760)))
-        root.minsize(S(1000), S(640))
+        root.geometry("%dx%d" % (S(1260), S(760)))   # 右栏放工作流卡后需要更宽（中栏 ~624 / 右栏 360）
+        root.minsize(S(1040), S(640))
 
         self.logq = queue.Queue()
         self.uiqueue = queue.Queue()    # 后台线程 → 主线程的回调队列（tkinter 非线程安全，禁止跨线程碰控件）
@@ -134,7 +134,7 @@ class App:
         self._run_btn = None            # 当前引擎卡上的「运行」按钮
 
         self._build_ui()
-        # 启动时只选中默认引擎、不滚动：让中栏停在顶部（服务状态条 + 工作流卡首屏可见）
+        # 启动时只选中默认引擎、不滚动：让中栏停在顶部（服务状态条首屏可见）
         self._select_nav("flashvsr", scroll=False)
         self._drain_log()
         self._probe_loop()
@@ -164,7 +164,7 @@ class App:
         tk.Label(brand, text="视频启动器", bg=CARD, fg=TXT, font=f(11, True)).pack(
             side="left", padx=(S(10), 0))
 
-        # 只放「会切换中间内容」的入口：服务状态条与工作流卡都在中栏常显，无需导航项
+        # 只放「会切换中间内容」的入口：服务状态条（中栏置顶）与工作流卡（右栏顶部）都常显，无需导航项
         self.nav_items = {}
         defs = [
             ("flashvsr", "FlashVSR", BLUE, None),
@@ -232,7 +232,6 @@ class App:
         self.stage_cv.bind("<Enter>", lambda e: self.stage_cv.bind_all("<MouseWheel>", self._on_wheel))
         self.stage_cv.bind("<Leave>", lambda e: self.stage_cv.unbind_all("<MouseWheel>"))
 
-        self._build_workflow_card(self.stage)
         self._build_engine_area(self.stage)
         self._build_settings_card(self.stage)
 
@@ -240,44 +239,40 @@ class App:
         tk.Label(parent, text=text, bg=BG, fg=TXT2, font=f(9), anchor="w").pack(
             fill="x", pady=(0, S(8)), padx=S(2))
 
-    # ---- 工作流卡 ----
+    # ---- 工作流卡（右栏顶部，常显不滚动）----
     def _build_workflow_card(self, parent):
-        self._section(parent, "工作流 · App 内置下拉选择，也可加载本地 .JSON")
-
         card = RoundedFrame(parent, outer=BG, pad=(6, 6))
-        card.pack(fill="x", pady=(0, S(16)))
+        card.pack(fill="x", pady=(0, S(14)))
         self.wf_card = card
         b = card.body
 
+        # 窄栏（右栏 ~360px）排布：标题行 / 下拉独占一行 / 节点数小字一行
         head = tk.Frame(b, bg=CARD)
-        head.pack(fill="x", pady=(0, S(12)))
+        head.pack(fill="x", pady=(0, S(10)))
         swatch_text(head, 30, TEAL, "⚙", outer=CARD, radius=S(8), font=f(13)).pack(side="left")
-        tk.Label(head, text="选择 / 加载工作流", bg=CARD, fg=TXT, font=f(11, True)).pack(
-            side="left", padx=(S(10), S(10)))
-        tk.Label(head, text="%d 套内置" % len(WORKFLOWS), bg=CARD, fg=TXT2, font=f(9),
-                 padx=S(8), pady=S(2)).pack(side="left")
+        tk.Label(head, text="选择 / 加载工作流", bg=CARD, fg=TXT, font=f(10, True)).pack(
+            side="left", padx=(S(10), 0))
         self.btn_load = RButton(head, text="加载 .json", command=self._load_wf_json,
                                 fill=TEAL, fg=DARKTX, border=None, outer=CARD, font=f(9), pady=6)
         self.btn_load.pack(side="right")
 
-        row = tk.Frame(b, bg=CARD)
-        row.pack(fill="x")
-        tk.Label(row, text="工作流", bg=CARD, fg=TXT2, font=f(9)).pack(side="left", padx=(0, S(12)))
-        self.wf_dd = Dropdown(row, [w["name"] for w in WORKFLOWS], command=self._on_wf_select,
+        tk.Label(b, text="工作流", bg=CARD, fg=TXT2, font=f(9), anchor="w").pack(fill="x")
+        self.wf_dd = Dropdown(b, [w["name"] for w in WORKFLOWS], command=self._on_wf_select,
                               outer=CARD, placeholder="— 请选择一套内置工作流 —", font=f(10))
-        self.wf_dd.pack(side="left", fill="x", expand=True)
-        self.wf_nodes = tk.Label(row, text="— 节点", bg=CARD, fg=TXT2, font=f(9),
-                                 width=8, padx=S(8), pady=S(2))
-        self.wf_nodes.pack(side="left", padx=(S(12), 0))
+        self.wf_dd.pack(fill="x", pady=(S(5), 0))
+        self.wf_nodes = tk.Label(b, text="未选择 · 共 %d 套内置" % len(WORKFLOWS),
+                                 bg=CARD, fg=TXT2, font=f(8), anchor="w")
+        self.wf_nodes.pack(fill="x", pady=(S(6), 0))
 
         self.wf_detail = tk.Frame(b, bg=CARD)
         self._render_wf_detail(None, None)
 
     def _render_wf_detail(self, wf, local_name=None):
+        # 右栏窄（~340 可用宽），正文换行宽度统一收窄到 ~250
         d = self.wf_detail
         for c in d.winfo_children():
             c.destroy()
-        d.pack(fill="x", pady=(S(14), 0))
+        d.pack(fill="x", pady=(S(12), 0))
         box = tk.Frame(d, bg=BORDER)
         box.pack(fill="x")
         inner = tk.Frame(box, bg="#1c202a")
@@ -287,13 +282,13 @@ class App:
             tk.Label(inner, text="选择一套内置工作流，或「加载 .json」选本地 ComfyUI 工作流，"
                                  "这里会显示它的节点与输入输出。",
                      bg="#1c202a", fg=TXT2, font=f(9), anchor="w", justify="left",
-                     wraplength=S(560)).pack(fill="x", padx=S(14), pady=S(14))
+                     wraplength=S(250)).pack(fill="x", padx=S(12), pady=S(12))
             return
 
         pad = tk.Frame(inner, bg="#1c202a")
-        pad.pack(fill="x", padx=S(14), pady=S(12))
+        pad.pack(fill="x", padx=S(12), pady=S(10))
 
-        # 头：名称 + 徽标
+        # 头：名称（可换行）+ 徽标靠右
         head = tk.Frame(pad, bg="#1c202a")
         head.pack(fill="x")
         if wf:
@@ -305,13 +300,13 @@ class App:
             name, badge, bcol = local_name, "本地", AMBER
             desc = "已从本地加载：%s" % local_name
             steps, inN, outN = [], "—", "—"
-        tk.Label(head, text=name, bg="#1c202a", fg=TXT, font=f(11, True),
-                 anchor="w").pack(side="left")
         tk.Label(head, text=badge, bg=bcol, fg=DARKTX, font=f(8, True),
-                 padx=S(8), pady=S(1)).pack(side="left", padx=(S(10), 0))
+                 padx=S(8), pady=S(1)).pack(side="right")
+        tk.Label(head, text=name, bg="#1c202a", fg=TXT, font=f(10, True), anchor="w",
+                 justify="left", wraplength=S(200)).pack(side="left", fill="x", expand=True)
 
         tk.Label(pad, text=desc, bg="#1c202a", fg=TXT2, font=f(9), anchor="w",
-                 justify="left", wraplength=S(600)).pack(fill="x", pady=(S(8), S(4)))
+                 justify="left", wraplength=S(250)).pack(fill="x", pady=(S(8), S(4)))
 
         steps_box = tk.Frame(pad, bg="#1c202a")
         steps_box.pack(fill="x")
@@ -322,28 +317,34 @@ class App:
                          width=2, padx=S(4), pady=0)
             n.pack(side="left")
             tk.Label(r, text=node, bg="#1c202a", fg=TXT, font=f(9), anchor="w").pack(
-                side="left", padx=(S(10), 0))
+                side="left", padx=(S(8), 0))
             if io:
                 tk.Label(r, text=io, bg="#1c202a", fg=TXT2, font=f(8)).pack(side="right")
 
         nodes = len(steps)
         if local_name:
             nodes = self.wf_nodes_text if getattr(self, "wf_nodes_text", None) else nodes
+        # 窄栏放不下 4 项横排 → 2×2 网格
         meta_row = tk.Frame(pad, bg="#1c202a")
         meta_row.pack(fill="x", pady=(S(10), S(4)))
-        for lab, val in (("节点", str(nodes)), ("输入", inN), ("输出", outN), ("目标", "ComfyUI :8188")):
-            item = tk.Frame(meta_row, bg="#1c202a")
-            item.pack(side="left", padx=(0, S(22)))
-            tk.Label(item, text=lab + " ", bg="#1c202a", fg=TXT2, font=f(9)).pack(side="left")
-            tk.Label(item, text=val, bg="#1c202a", fg=TXT, font=f(9, True)).pack(side="left")
+        meta_row.columnconfigure(0, weight=1)
+        meta_row.columnconfigure(1, weight=1)
+        for i, (lab, val) in enumerate((("节点", str(nodes)), ("输入", inN),
+                                        ("输出", outN), ("目标", "ComfyUI :8188"))):
+            cell = tk.Frame(meta_row, bg="#1c202a")
+            cell.grid(row=i // 2, column=i % 2, sticky="w", pady=S(2))
+            tk.Label(cell, text=lab + " ", bg="#1c202a", fg=TXT2, font=f(8)).pack(side="left")
+            tk.Label(cell, text=val, bg="#1c202a", fg=TXT, font=f(8, True)).pack(side="left")
 
         acts = tk.Frame(pad, bg="#1c202a")
         acts.pack(fill="x", pady=(S(10), 0))
         RButton(acts, text="推送到 ComfyUI", command=lambda: self._push_wf(False),
-                fill=TEAL, fg=DARKTX, border=None, outer="#1c202a", font=f(9), pady=6).pack(side="left")
+                fill=TEAL, fg=DARKTX, border=None, outer="#1c202a", font=f(9), pady=6,
+                stretch=True).pack(side="left", fill="x", expand=True)
         RButton(acts, text="加入队列", command=lambda: self._push_wf(True),
                 fill="transparent", fg=TXT, border=BORDER, outer="#1c202a",
-                font=f(9), pady=6).pack(side="left", padx=(S(10), 0))
+                font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
+                                                     padx=(S(8), 0))
 
     # ---- 引擎区（标签切换单卡） ----
     def _build_engine_area(self, parent):
@@ -467,13 +468,17 @@ class App:
         return btn
 
     def _goto_wf(self, parent):
-        link = tk.Label(parent, text="从工作流库选择 →", bg=CARD, fg=TXT2, font=f(9),
+        link = tk.Label(parent, text="工作流选择在右栏上方 ↑", bg=CARD, fg=TXT2, font=f(9),
                         cursor="hand2")
         link.pack(pady=(S(9), 0))
         link.bind("<Enter>", lambda e: link.configure(fg=TXT))
         link.bind("<Leave>", lambda e: link.configure(fg=TXT2))
-        # 只滚动到工作流卡，不动左导航高亮（工作流已不是导航项）
-        link.bind("<Button-1>", lambda e: self._scroll_to(self.wf_card))
+        link.bind("<Button-1>", lambda e: self._flash_wf())
+
+    def _flash_wf(self):
+        """工作流卡固定在右栏顶部、不在滚动舞台里，所以用一次描边闪烁提示它在哪。"""
+        self.wf_card.set_border(BLUE)
+        self.root.after(500, lambda: self.wf_card.set_border(BORDER))
 
     # ---- 设置卡 ----
     def _build_settings_card(self, parent):
@@ -502,12 +507,19 @@ class App:
         RButton(row, text="打开输出目录", command=lambda: self._open_dir(CONFIG["output_dir"]),
                 fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6).pack(side="left", padx=(S(8), 0))
 
-    # ---- 右：日志栏 ----
+    # ---- 右：工作流（上，常显）+ 日志（下，占满剩余）----
     def _build_logpane(self, parent):
-        pane = RoundedFrame(parent, outer=BG, pad=(4, 4), radius=S(12))
-        pane.grid(row=0, column=2, sticky="nsew", padx=(S(14), 0))
-        pane.configure(width=S(312))
-        pane.pack_propagate(False)
+        col = tk.Frame(parent, bg=BG)
+        col.grid(row=0, column=2, sticky="nsew", padx=(S(14), 0))
+        col.configure(width=S(360))
+        col.pack_propagate(False)
+
+        # 上：工作流卡（常显，不随中栏滚动）
+        self._build_workflow_card(col)
+
+        # 下：日志卡（吃掉剩余高度）
+        pane = RoundedFrame(col, outer=BG, pad=(4, 4), radius=S(12))
+        pane.pack(fill="both", expand=True)
         b = pane.body
 
         head = tk.Frame(b, bg=CARD)
@@ -550,10 +562,10 @@ class App:
         """左导航点击：切换引擎标签，并把中间舞台滚到对应卡片。
 
         参数 scroll=False 用于程序启动时——只选中默认引擎，不滚动，
-        让中栏停在顶部（服务状态条 + 工作流卡默认可见）。
+        让中栏停在顶部（服务状态条首屏可见）。
 
-        注：中栏顶部的服务状态条（置顶常显）与舞台首屏的工作流卡不进导航 ——
-        它们无需点击就已可见，滚动入口改走各引擎卡里的「从工作流库选择 →」链接。
+        注：服务状态条（中栏置顶）与工作流卡（右栏顶部）都是常显区，不进导航 ——
+        它们无需点击就已可见，导航只保留「会切换中栏内容」的引擎项与设置。
         """
         for k, it in self.nav_items.items():
             it.set_active(k == key)

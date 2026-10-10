@@ -116,6 +116,11 @@ class RoundedFrame(tk.Frame):
         self.cv.delete("all")
         self._redraw()
 
+    def set_border(self, border):
+        """只换描边色（用于"闪烁提示位置"这类不改变卡片配色的强调）。"""
+        self._border = border
+        self._redraw()
+
     def _redraw(self, e=None):
         w = self.winfo_width()
         h = self.winfo_height()
