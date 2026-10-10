@@ -15,6 +15,7 @@
   * 探测 ComfyUI 必须绕开系统代理（Clash 会把 127.0.0.1 也代理掉，返回 502）
   * 跨线程不得直接操作 Tk 控件：后台线程只把结果投递回主线程（root.after）再刷新
 """
+import copy
 import json
 import os
 import queue
@@ -40,6 +41,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
+APP_VER = "v1.2.11"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -110,7 +112,7 @@ def _write_crash(kind, exc_type, exc, tb):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("视频方案启动器")
+        root.title("视频方案启动器 " + APP_VER)
         root.configure(bg=BG)
         # 尺寸按"内容需求"倒推：上排要同时容下中栏引擎卡（~497）与右栏（服务卡 128 + 工作流卡
         # 含详情 ~500），下排运行日志再要 ~276 —— 取 960 高，日志才有十几行可看。
@@ -134,6 +136,7 @@ class App:
         self._svc_starting = False      # 启动中锁：防止就绪前连点起多个 ComfyUI 进程
         self._log_lines = 0             # 日志区当前行数（自维护，用于裁剪，不依赖 Text.count）
         self._loaded_api = None         # 已加载的本地工作流（API 格式 JSON）
+        self._local_wfs = {}            # 本次运行加载过的本地 .json：文件名 → 图（下拉里能再选回来）
         self._active_wf_id = None
         self._probe_state = {"alive": False, "starting": False, "own": False,
                              "version": "?", "gpu": ""}
@@ -306,7 +309,7 @@ class App:
         self.btn_load.pack(side="right")
 
         tk.Label(b, text="工作流", bg=CARD, fg=TXT2, font=f(9), anchor="w").pack(fill="x")
-        self.wf_dd = Dropdown(b, [w["name"] for w in WORKFLOWS], command=self._on_wf_select,
+        self.wf_dd = Dropdown(b, self._wf_names(), command=self._on_wf_select,
                               outer=CARD, placeholder="— 请选择一套内置工作流 —", font=f(10))
         self.wf_dd.pack(fill="x", pady=(S(5), 0))
         self._watch_expand(self.wf_dd)
@@ -314,89 +317,116 @@ class App:
                                  bg=CARD, fg=TXT2, font=f(8), anchor="w")
         self.wf_nodes.pack(fill="x", pady=(S(6), 0))
 
-        self.wf_detail = tk.Frame(b, bg=CARD)
-        self._render_wf_detail(None, None)
+        self.wf_detail = ui_kit.WorkflowDetail(b, engines=ENG, outer=CARD,
+                                               on_change=self._schedule_top_sync,
+                                               on_push=self._push_wf)
 
-    def _render_wf_detail(self, wf, local_name=None):
-        # 右栏窄（~340 可用宽），正文换行宽度统一收窄到 ~250
-        d = self.wf_detail
-        for c in d.winfo_children():
-            c.destroy()
-        d.pack(fill="x", pady=(S(12), 0))
-        box = tk.Frame(d, bg=BORDER)
-        box.pack(fill="x")
-        inner = tk.Frame(box, bg="#1c202a")
-        inner.pack(fill="x", padx=1, pady=1)
-
-        if wf is None and local_name is None:
-            tk.Label(inner, text="选择一套内置工作流，或「加载 .json」选本地 ComfyUI 工作流，"
-                                 "这里会显示它的节点与输入输出。",
-                     bg="#1c202a", fg=TXT2, font=f(9), anchor="w", justify="left",
-                     wraplength=S(250)).pack(fill="x", padx=S(12), pady=S(12))
-            self._schedule_top_sync()
-            return
-
-        pad = tk.Frame(inner, bg="#1c202a")
-        pad.pack(fill="x", padx=S(12), pady=S(10))
-
-        # 头：名称（可换行）+ 徽标靠右
-        head = tk.Frame(pad, bg="#1c202a")
-        head.pack(fill="x")
+    # ---- 工作流的选 / 载 / 推 ----
+    def _on_wf_select(self, name):
+        """下拉里选了某一项：先当内置方案找，找不到再看是不是加载过的本地 .json。"""
+        wf = next((w for w in WORKFLOWS if w["name"] == name), None)
         if wf:
-            meta = ENG[wf["engine"]]
-            name, badge, bcol = wf["name"], meta["label"], meta["color"]
-            desc, steps = wf["desc"], wf["steps"]
-            inN, outN = wf["inN"], wf["outN"]
+            self._loaded_api = None
+            self._active_wf_id = wf["id"]
+            self.wf_nodes.configure(text="%d 节点" % len(wf["steps"]))
+            self.wf_detail.show(wf, None, nodes=len(wf["steps"]))
+            tag = "lw" if wf["engine"] == "minimax" else "ok"
+            self.log("[工作流] 已选择 %s" % wf["name"], tag)
+            # 同步左导航高亮与引擎标签（工作流自带引擎），不滚动以免把刚展开的详情甩出视野
+            self._select_nav(wf["engine"], scroll=False)
+            return
+        data = self._local_wfs.get(name)          # v1.2.11：加载过的 .json 也能在下拉里选回来
+        if data is None:
+            return
+        self._use_local(name, data, log=False)
+
+    def _use_local(self, name, data, log=True):
+        """把一份本地 API 图设为当前方案（下拉选中 / 刚加载 都走这里）。"""
+        n = rt.api_node_count(data)
+        self._loaded_api = data
+        self._active_wf_id = None
+        self.wf_nodes.configure(text="%d 节点" % n)
+        self.wf_detail.show(None, name, nodes=n)
+        if log:
+            self.log("[工作流] 已加载本地 %s（%d 节点）" % (name, n), "lw")
+
+    def _load_wf_json(self):
+        # 默认落在部署脚本目录的图库（图本来就在那儿），目录不在时交给系统默认位置
+        start = CONFIG["deploy_root"] if os.path.isdir(CONFIG["deploy_root"]) else None
+        p = filedialog.askopenfilename(title="选择 ComfyUI 工作流 .json", initialdir=start,
+                                       filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
+        if not p:
+            return
+        data, err = rt.load_api(p)
+        if err:
+            self.log("[工作流] %s" % err, "err")
+            return
+        name = os.path.basename(p)
+        self._local_wfs[name] = data
+        self.wf_dd.set_values(self._wf_names())   # 先进下拉，再选中（顺序反了会被 set_values 清掉）
+        self.wf_dd.set(name)
+        self._use_local(name, data)
+
+    def _wf_names(self):
+        """下拉的选项：内置方案在前，加载过的本地 .json 跟在后面。"""
+        return [w["name"] for w in WORKFLOWS] + list(self._local_wfs)
+
+    def _push_wf(self, to_queue):
+        """把当前方案推给 ComfyUI。
+
+        v1.2.11 起内置方案也能推：方案没带 API 图时，从部署脚本目录里读它绑定的那份图
+        （见 运行时.pick_api），再把图里的素材换成界面上选的输入。
+        """
+        wf = next((w for w in WORKFLOWS if w["id"] == self._active_wf_id), None)
+        name = wf["name"] if wf else (self.wf_dd.value or "未选择")
+        if not self.comfy_alive():
+            self.log("[工作流] ComfyUI 未运行，先启动服务再%s" % ("入队" if to_queue else "推送"),
+                     "warn")
+            return
+        video = self.in_var.get().strip() if getattr(self, "in_var", None) else ""
+        api, why = self._api_for(wf, video)
+        if api is None:
+            self.log("[工作流] 「%s」%s" % (name, why), "warn")
+            return
+        if why:
+            self.log("[工作流] %s" % why, "dim")
+        verb = "入队" if to_queue else "推送"
+        err = rt.http_post_json(CONFIG["comfy_url"] + "/prompt",
+                                {"prompt": api, "client_id": "video-launcher"})
+        if err is None:
+            self.log("[工作流] 已%s「%s」→ ComfyUI" % (verb, name), "lw" if to_queue else "ok")
         else:
-            name, badge, bcol = local_name, "本地", AMBER
-            desc = "已从本地加载：%s" % local_name
-            steps, inN, outN = [], "—", "—"
-        tk.Label(head, text=badge, bg=bcol, fg=DARKTX, font=f(8, True),
-                 padx=S(8), pady=S(1)).pack(side="right")
-        tk.Label(head, text=name, bg="#1c202a", fg=TXT, font=f(10, True), anchor="w",
-                 justify="left", wraplength=S(200)).pack(side="left", fill="x", expand=True)
+            self.log("[工作流] %s失败：%s" % (verb, err), "err")
 
-        tk.Label(pad, text=desc, bg="#1c202a", fg=TXT2, font=f(9), anchor="w",
-                 justify="left", wraplength=S(250)).pack(fill="x", pady=(S(8), S(4)))
+    def _api_for(self, wf, video):
+        """备好这次要提交的图，返回 (图 or None, 说明 / 取不到的原因)。
 
-        steps_box = tk.Frame(pad, bg="#1c202a")
-        steps_box.pack(fill="x")
-        for i, (node, io) in enumerate(steps, 1):
-            r = tk.Frame(steps_box, bg="#1c202a")
-            r.pack(fill="x", pady=S(3))
-            n = tk.Label(r, text=str(i), bg=bcol, fg=DARKTX, font=f(8, True),
-                         width=2, padx=S(4), pady=0)
-            n.pack(side="left")
-            tk.Label(r, text=node, bg="#1c202a", fg=TXT, font=f(9), anchor="w").pack(
-                side="left", padx=(S(8), 0))
-            if io:
-                tk.Label(r, text=io, bg="#1c202a", fg=TXT2, font=f(8)).pack(side="right")
-
-        nodes = len(steps)
-        if local_name:
-            nodes = self.wf_nodes_text if getattr(self, "wf_nodes_text", None) else nodes
-        # 窄栏放不下 4 项横排 → 2×2 网格
-        meta_row = tk.Frame(pad, bg="#1c202a")
-        meta_row.pack(fill="x", pady=(S(10), S(4)))
-        meta_row.columnconfigure(0, weight=1)
-        meta_row.columnconfigure(1, weight=1)
-        for i, (lab, val) in enumerate((("节点", str(nodes)), ("输入", inN),
-                                        ("输出", outN), ("目标", "ComfyUI :8188"))):
-            cell = tk.Frame(meta_row, bg="#1c202a")
-            cell.grid(row=i // 2, column=i % 2, sticky="w", pady=S(2))
-            tk.Label(cell, text=lab + " ", bg="#1c202a", fg=TXT2, font=f(8)).pack(side="left")
-            tk.Label(cell, text=val, bg="#1c202a", fg=TXT, font=f(8, True)).pack(side="left")
-
-        acts = tk.Frame(pad, bg="#1c202a")
-        acts.pack(fill="x", pady=(S(10), 0))
-        RButton(acts, text="推送到 ComfyUI", command=lambda: self._push_wf(False),
-                fill=TEAL, fg=DARKTX, border=None, outer="#1c202a", font=f(9), pady=6,
-                stretch=True).pack(side="left", fill="x", expand=True)
-        RButton(acts, text="加入队列", command=lambda: self._push_wf(True),
-                fill="transparent", fg=TXT, border=BORDER, outer="#1c202a",
-                font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
-                                                     padx=(S(8), 0))
-        self._schedule_top_sync()
+        两条来源，都先把图里的素材换成界面上选的输入（用户在本程序里选了输入，
+        意思就是要用它 —— 尤其本地图常常带着作者机器上的硬编码示例路径）：
+          * 用户「加载 .json」过的图优先（那是显式选择）；
+          * 否则用内置方案绑定的图，顺带按方案覆盖参数、按素材音轨挑有声/无音轨版。
+        """
+        if self._loaded_api is not None:
+            api, why = copy.deepcopy(self._loaded_api), ""
+        else:
+            if wf is None:
+                return None, "还没选方案；先在下拉里选一套，或点「加载 .json」"
+            path, why = rt.pick_api(CONFIG, wf, video)
+            if not path:
+                return None, why
+            api, err = rt.load_api(path)
+            if err:
+                return None, err
+            k = rt.apply_patch(api, wf.get("patch"))
+            if k:
+                pairs = ["%s.%s=%s" % (cls, key, val)
+                         for cls, over in (wf.get("patch") or {}).items()
+                         for key, val in over.items()]
+                self.log("[工作流] 按方案覆盖 %d 处参数（%s）" % (k, "、".join(pairs)), "dim")
+        n = rt.apply_input(api, video)
+        if video and not n:
+            self.log("[工作流] 图里没有可替换的载入节点，沿用图内原路径", "dim")
+        return api, why
 
     # ---- 引擎区（单卡，切换交给左导航）----
     def _build_engine_area(self, parent):
@@ -591,6 +621,8 @@ class App:
                                 anchor="w")
         self.svc_url.pack(fill="x", pady=(S(7), S(9)))
 
+        # 按钮排两行：右栏只有 ~324 可用宽，四个挤一行时「停止队列任务」的文字会超出
+        # 按钮本身（6 个汉字 + 内边距实测要 ~100px，四个平分只剩 76px）。
         row = tk.Frame(b, bg=CARD)
         row.pack(fill="x")
         self.btn_primary = RButton(row, text="启动服务", command=self._primary_service,
@@ -599,11 +631,18 @@ class App:
         self.btn_primary.pack(side="left", fill="x", expand=True)
         RButton(row, text="打开网页", command=self.open_web, fill=CARD2, fg=TXT,
                 outer=CARD, font=f(9), pady=6, stretch=True).pack(
-                    side="left", fill="x", expand=True, padx=(S(6), S(6)))
-        self.btn_stop = RButton(row, text="停止服务", command=self.svc_stop, fill=CARD2,
+                    side="left", fill="x", expand=True, padx=(S(6), 0))
+
+        row2 = tk.Frame(b, bg=CARD)
+        row2.pack(fill="x", pady=(S(6), 0))
+        self.btn_stop = RButton(row2, text="停止服务", command=self.svc_stop, fill=CARD2,
                                 fg=TXT, outer=CARD, font=f(9), pady=6, state="disabled",
                                 stretch=True)
         self.btn_stop.pack(side="left", fill="x", expand=True)
+        self.btn_queue = RButton(row2, text="停止队列任务", command=self.svc_stop_queue,
+                                 fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6,
+                                 state="disabled", stretch=True)
+        self.btn_queue.pack(side="left", fill="x", expand=True, padx=(S(6), 0))
 
     # ---- 右：服务卡（上）+ 工作流卡（下）----
     def _build_right(self, parent):
@@ -685,68 +724,6 @@ class App:
 
     def _on_wheel(self, e):
         self.stage_cv.yview_scroll(int(-e.delta / 120), "units")
-
-    # ================================================================ 工作流
-    def _on_wf_select(self, name):
-        wf = next((w for w in WORKFLOWS if w["name"] == name), None)
-        if not wf:
-            return
-        self._loaded_api = None
-        self._active_wf_id = wf["id"]
-        self.wf_nodes.configure(text="%d 节点" % len(wf["steps"]))
-        self.wf_nodes_text = len(wf["steps"])
-        self._render_wf_detail(wf, None)
-        tag = "lw" if wf["engine"] == "minimax" else "ok"
-        self.log("[工作流] 已选择 %s" % wf["name"], tag)
-        # 同步左导航高亮与引擎标签（工作流自带引擎），不滚动以免把刚展开的详情面板甩出视野
-        self._select_nav(wf["engine"], scroll=False)
-
-    def _load_wf_json(self):
-        p = filedialog.askopenfilename(title="选择 ComfyUI 工作流 .json",
-                                       filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
-        if not p:
-            return
-        try:
-            with open(p, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except Exception as e:
-            self.log("[工作流] 解析失败：%r" % e, "err")
-            return
-        n = 0
-        if isinstance(data, dict):
-            if isinstance(data.get("nodes"), list):
-                n = len(data["nodes"])
-            elif isinstance(data.get("api"), dict) and isinstance(data["api"].get("nodes"), list):
-                n = len(data["api"]["nodes"])
-            else:
-                n = len(data)
-        self._loaded_api = data
-        self._active_wf_id = None
-        name = os.path.basename(p)
-        self.wf_dd.set(name)
-        self.wf_nodes.configure(text="%d 节点" % n)
-        self.wf_nodes_text = n
-        self._render_wf_detail(None, name)
-        self.log("[工作流] 已加载本地 %s（%d 节点）" % (name, n), "lw")
-
-    def _push_wf(self, to_queue):
-        wf = next((w for w in WORKFLOWS if w["id"] == self._active_wf_id), None)
-        name = wf["name"] if wf else (self.wf_dd.value or "未选择")
-        if self._loaded_api is None:
-            self.log("[工作流] 「%s」是内置方案说明，未含 API 图；请「加载 .json」后再推送" % name,
-                     "warn")
-            return
-        if not self.comfy_alive():
-            self.log("[工作流] ComfyUI 未运行，先启动服务再%s" % ("入队" if to_queue else "推送"),
-                     "warn")
-            return
-        err = rt.http_post_json(CONFIG["comfy_url"] + "/prompt",
-                                {"prompt": self._loaded_api, "client_id": "video-launcher"})
-        if err is None:
-            self.log("[工作流] 已%s「%s」→ ComfyUI" % ("入队" if to_queue else "推送", name),
-                     "lw" if to_queue else "ok")
-        else:
-            self.log("[工作流] 推送失败：%s" % err, "err")
 
     # ================================================================ 小工具
     def _pick(self, var, is_file=True):
@@ -951,6 +928,35 @@ class App:
             except Exception as e:
                 self.log("[服务] 停止失败：%r" % e, "err")
 
+    def svc_stop_queue(self):
+        """停掉 ComfyUI 里正在跑的 + 排队中的任务。
+
+        两个接口各管一半（ComfyUI 官方语义）：/interrupt 打断当前执行、
+        /queue{"clear":true} 清掉还没轮到的。先读一次 /queue 是为了把"停掉几个"
+        说清楚 —— 队列本来就空时直接报"已停止"会让人以为程序在自说自话。
+
+        与「停止服务」的区别：这个是**外部启动的 ComfyUI 也能用**的，只走 HTTP；
+        「停止服务」只能停本程序自己拉起的那个进程。
+        """
+        if not self.comfy_alive():
+            self.log("[队列] ComfyUI 没在运行，没有可停的任务", "warn")
+            return
+        q = rt.http_json(CONFIG["comfy_url"] + "/queue") or {}
+        running = len(q.get("queue_running") or [])
+        pending = len(q.get("queue_pending") or [])
+        if not running and not pending:
+            self.log("[队列] 当前没有正在跑或排队中的任务", "warn")
+            return
+        err = rt.http_post_json(CONFIG["comfy_url"] + "/interrupt", {})
+        if err:
+            self.log("[队列] 中断当前任务失败：%s" % err, "err")
+            return
+        err = rt.http_post_json(CONFIG["comfy_url"] + "/queue", {"clear": True})
+        if err:
+            self.log("[队列] 已中断当前任务，但清空排队失败：%s" % err, "err")
+            return
+        self.log("[队列] 已停止 %d 个执行中 + %d 个排队中的任务" % (running, pending), "ok")
+
     def open_web(self):
         if not self.comfy_alive():
             self.svc_start()
@@ -1091,6 +1097,9 @@ class App:
             self.btn_primary.set_state("normal")
         # 停止：仅当自己拉起的进程在跑
         self.btn_stop.set_state("normal" if own else "disabled")
+        # 停止队列：只要服务活着就能清（外部启动的 ComfyUI 一样能中断/清队列，
+        # 不像"停止服务"那样必须是自己拉起的进程）
+        self.btn_queue.set_state("normal" if self._probe_state["alive"] else "disabled")
 
     def _gpu_by_nvidia_smi(self):
         """读显存（解析在 运行时.gpu_by_nvidia_smi）。

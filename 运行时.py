@@ -467,20 +467,159 @@ def check_input(path, name="输入"):
     return p, ""
 
 
+# ================================================================ 工作流 API 图
+# 内置方案在界面上只是一份"节点说明"（steps / inN / outN），没有能提交给 ComfyUI 的图 ——
+# 所以选中它点推送，老版本只能回一句「未含 API 图，请先加载 .json」。
+# 这里把**确实有图的那几个方案**跟部署脚本目录里的图绑起来（相对 deploy_root 的路径），
+# 并顺手把图里的素材换成界面上选的那份、按方案覆盖几个关键参数。
+#
+# 为什么必须"有声 / 无音轨"二选一：VHS_LoadVideoPath 的 audio 输出是**惰性取流**，
+# 只有被下游引用时才去抽音轨（videohelpersuite/utils.py 的 get_audio）。源文件没有
+# 音轨流时 ffmpeg 直接抛 "Output file does not contain any stream"，VHS 不做降级 ——
+# 任务在**第一个节点**就 error，报错信息还很晦涩。依据：部署仓库 workflows/README.md。
+#
+# 载入节点的类名 / 字段名是 ComfyUI 生态的既有约定，不是本项目自造：
+#   VHS_LoadVideoPath.video → 素材的**完整路径**
+#   LoadVideo.file         → ComfyUI input 目录下的**文件名**（语义不同，别混用，
+#                            所以这里只收"吃完整路径"的那两类；详见 DEVELOPMENT）
+API_INPUTS = (("VHS_LoadVideoPath", "video"), ("LoadVideoPath", "video"))
+_API_INPUT_CLS = dict(API_INPUTS)
+
+
+def api_dir(cfg):
+    """部署脚本目录下的图库（没绑图的方案用它指路）。"""
+    return os.path.normpath(
+        os.path.join(str((cfg or {}).get("deploy_root", "") or ""), "workflows"))
+
+
+def ffprobe_exe(cfg):
+    """找 ffprobe：先看配置里的 ffmpeg 目录，再退回系统 PATH。"""
+    p = os.path.join(str((cfg or {}).get("ffmpeg_dir", "") or ""), "ffprobe.exe")
+    return p if os.path.exists(p) else shutil.which("ffprobe")
+
+
+def probe_audio(cfg, video):
+    """素材有没有音轨，返回 (是否有音轨, 依据文本)。
+
+    判不出来一律按"有音轨"处理 —— 走有声版只是多抽一次音轨；反过来若源真有音轨却按
+    无音轨版推，产物会**静默丢掉原声**，那是用户更难发现的错。
+    """
+    exe = ffprobe_exe(cfg)
+    if not exe:
+        return True, "没找到 ffprobe"
+    if not os.path.isfile(video):
+        return True, "素材不是单个文件（批量场景无从判断）"
+    try:
+        r = subprocess.run(
+            [exe, "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=codec_type", "-of", "csv=p=0", video],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+            errors="replace", timeout=30, check=False, creationflags=NO_WINDOW)
+    except Exception as e:
+        return True, "ffprobe 调用失败：%r" % e
+    if r.returncode != 0:                   # 读不了这份素材（损坏/不是媒体）：不敢下结论
+        return True, "ffprobe 返回 %d" % r.returncode
+    has = "audio" in (r.stdout or "")
+    return has, "ffprobe 判定%s音轨" % ("" if has else "无")
+
+
+def pick_api(cfg, wf, video):
+    """给内置方案挑一份 API 图，返回 (图的完整路径 or None, 说明文本)。
+
+    wf["api"] 可以是单个相对路径；也可以是 {"audio": …, "silent": …} —— 按素材有无
+    音轨二选一。挑不到时说明文本是一句能照着做的话（指出图库在哪）。
+    """
+    root = str((cfg or {}).get("deploy_root", "") or "")
+    src = (wf or {}).get("api")
+    if not src:
+        return None, "该方案没有内置 API 图；可在 %s 里挑一份点「加载 .json」" % api_dir(cfg)
+    if isinstance(src, str):
+        return os.path.join(root, src), ""
+    has, why = probe_audio(cfg, video)
+    rel = src.get("audio" if has else "silent")
+    return (os.path.join(root, rel) if rel else None,
+            "%s → 用「%s」版" % (why, "有声" if has else "无音轨"))
+
+
+def load_api(path):
+    """读一份 API 图（每节点都带 class_type 的扁平表）。返回 (数据, 错误串)。"""
+    if not path:
+        return None, "没有指定 API 图"
+    if not os.path.exists(path):
+        return None, "API 图不存在：%s" % path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as e:
+        return None, "API 图解析失败：%r" % e
+    if not isinstance(data, dict) or not data:
+        return None, "API 图内容不是节点表（应为 {节点id: {class_type, inputs}}）"
+    return data, ""
+
+
+def apply_input(api, video):
+    """把图里"载入视频"节点的素材换成 video。返回改动的节点数（0 = 图里没有这类节点）。"""
+    v = str(video or "").strip().strip('"')
+    if not v:
+        return 0
+    n = 0
+    for node in api.values():
+        if isinstance(node, dict) and node.get("class_type") in _API_INPUT_CLS:
+            node.setdefault("inputs", {})[_API_INPUT_CLS[node["class_type"]]] = v
+            n += 1
+    return n
+
+
+def apply_patch(api, patch):
+    """按节点类名覆盖参数（如 FlashVSRNode 的 scale）。返回改动的节点数。"""
+    patch = patch or {}
+    n = 0
+    for node in api.values():
+        over = patch.get(node.get("class_type")) if isinstance(node, dict) else None
+        if over:
+            node.setdefault("inputs", {}).update(over)
+            n += 1
+    return n
+
+
+def api_node_count(api):
+    """数一份图里的节点数。
+
+    两种写法都要认：API 格式（{节点id: {class_type…}}，节点数＝顶层键数）以及
+    前端导出的"UI 格式"（带 nodes 数组，也可能裹在 api.nodes 里）。
+    """
+    if not isinstance(api, dict):
+        return 0
+    if isinstance(api.get("nodes"), list):
+        return len(api["nodes"])
+    inner = api.get("api")
+    if isinstance(inner, dict) and isinstance(inner.get("nodes"), list):
+        return len(inner["nodes"])
+    return len(api)
+
+
 # ================================================================ 内置工作流清单
 # 纯数据（界面上的展示字段 + 节点步骤），不含颜色等界面令牌 —— 所以留在这里，
 # 而不是跟配色一起放在主文件里占地方。
+#
+# api   = 该方案对应的真实 API 图（相对 deploy_root 的路径）；没有就不写，界面会指路。
+# patch = 推之前要覆盖的节点参数（按 class_type 定位）—— 同一份图按方案微调用的。
+FLASHVSR_API = {                       # FlashVSR 两版图只差"有没有连音频线"
+    "audio":  "workflows/FlashVSR/FlashVSR-12G-有声素材.json",
+    "silent": "workflows/FlashVSR/FlashVSR-12G-无音轨素材.json",
+}
 WORKFLOWS = [
     {"id": "fv_2x", "engine": "flashvsr", "name": "FlashVSR · 通用 2x 放大",
      "desc": "通用超分，适合写实/日常视频，输出 2 倍分辨率。",
      "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=2"),
                ("(可选) 帧插值", "fps×2"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo", "api": FLASHVSR_API},
     {"id": "fv_4x", "engine": "flashvsr", "name": "FlashVSR · 动画 4x 放大",
      "desc": "针对动画/二次元优化，输出 4 倍分辨率，细节更锐。",
      "steps": [("LoadVideo", "input_dir"), ("FlashVSR 超分", "scale=4"),
                ("CAS 锐化", "strength=0.4"), ("SaveVideo", "output_dir")],
-     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
+     "inN": "1 × LoadVideo", "outN": "1 × SaveVideo",
+     "api": FLASHVSR_API, "patch": {"FlashVSRNode": {"scale": 4}}},
     {"id": "sv_std", "engine": "seedvr2", "name": "SeedVR2 · 标准 1080p",
      "desc": "标准档，短边缩放到 1080，速度与质量平衡。",
      "steps": [("LoadVideo", "input_dir"), ("SeedVR2 标准档", "tile=512"),

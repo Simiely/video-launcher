@@ -657,6 +657,120 @@ class SettingsList(tk.Frame):
             messagebox.showerror("保存失败", err, parent=self.winfo_toplevel())
 
 
+_INNER = "#1c202a"      # 卡片里的"内嵌面板"底色（比 CARD 深一档），只在本模块内部用
+
+
+class WorkflowDetail(tk.Frame):
+    """右栏工作流详情：铺开所选方案的节点步骤 + 输入输出 + 两个动作按钮。
+
+    渲染归到控件库的原因：它是纯界面拼装（内嵌面板 + 步骤列表 + 2×2 指标网格 +
+    动作按钮），跟业务无关；主文件的位置要留给"装配 + 状态机"。
+
+    数据全由业务层给，本类不判断任何语义：
+      * wf        = 内置方案 dict（engine / name / desc / steps / inN / outN），可为 None
+      * local_name= 本地加载的 .json 文件名，可为 None
+        （两者只会有一个非空；都为空 = 还没选，显示引导文案）
+      * engines   = 引擎元数据表（color / label），由主文件传入 —— 本模块不 import 业务代码
+      * nodes     = 节点数（内置方案传 len(steps)，本地传解析出的节点数）
+      * on_change = 内容变了（高度跟着变）时回调，供业务层重排上排高度
+      * on_push   = 点「推送 / 加入队列」时回调，参数 to_queue（True = 入队）
+    """
+
+    def __init__(self, master, *, engines, outer=CARD, nodes=None,
+                 on_change=None, on_push=None, wf=None, local_name=None):
+        super().__init__(master, bg=outer)
+        self._engines = engines or {}
+        self.on_change = on_change
+        self.on_push = on_push
+        self.nodes = nodes
+        self.show(wf, local_name)
+
+    def show(self, wf=None, local_name=None, nodes=None):
+        if nodes is not None:
+            self.nodes = nodes
+        for c in self.winfo_children():
+            c.destroy()
+        self.pack(fill="x", pady=(S(12), 0))
+        box = tk.Frame(self, bg=BORDER)
+        box.pack(fill="x")
+        inner = tk.Frame(box, bg=_INNER)
+        inner.pack(fill="x", padx=1, pady=1)
+
+        if wf is None and local_name is None:
+            tk.Label(inner, text="选择一套内置工作流，或「加载 .json」选本地 ComfyUI 工作流，"
+                                 "这里会显示它的节点与输入输出。",
+                     bg=_INNER, fg=TXT2, font=f(9), anchor="w", justify="left",
+                     wraplength=S(250)).pack(fill="x", padx=S(12), pady=S(12))
+            self._changed()
+            return
+
+        pad = tk.Frame(inner, bg=_INNER)
+        pad.pack(fill="x", padx=S(12), pady=S(10))
+
+        # 头：名称（可换行）+ 徽标靠右
+        head = tk.Frame(pad, bg=_INNER)
+        head.pack(fill="x")
+        if wf:
+            meta = self._engines.get(wf.get("engine"), {})
+            name, badge, bcol = wf["name"], meta.get("label", ""), meta.get("color", BLUE)
+            desc, steps = wf["desc"], wf["steps"]
+            inN, outN = wf["inN"], wf["outN"]
+        else:
+            name, badge, bcol = local_name, "本地", AMBER
+            desc = "已从本地加载：%s" % local_name
+            steps, inN, outN = [], "—", "—"
+        tk.Label(head, text=badge, bg=bcol, fg=DARKTX, font=f(8, True),
+                 padx=S(8), pady=S(1)).pack(side="right")
+        tk.Label(head, text=name, bg=_INNER, fg=TXT, font=f(10, True), anchor="w",
+                 justify="left", wraplength=S(200)).pack(side="left", fill="x", expand=True)
+
+        tk.Label(pad, text=desc, bg=_INNER, fg=TXT2, font=f(9), anchor="w",
+                 justify="left", wraplength=S(250)).pack(fill="x", pady=(S(8), S(4)))
+
+        steps_box = tk.Frame(pad, bg=_INNER)
+        steps_box.pack(fill="x")
+        for i, (node, io) in enumerate(steps, 1):
+            r = tk.Frame(steps_box, bg=_INNER)
+            r.pack(fill="x", pady=S(3))
+            tk.Label(r, text=str(i), bg=bcol, fg=DARKTX, font=f(8, True),
+                     width=2, padx=S(4), pady=0).pack(side="left")
+            tk.Label(r, text=node, bg=_INNER, fg=TXT, font=f(9), anchor="w").pack(
+                side="left", padx=(S(8), 0))
+            if io:
+                tk.Label(r, text=io, bg=_INNER, fg=TXT2, font=f(8)).pack(side="right")
+
+        n = self.nodes if self.nodes is not None else len(steps)
+        meta_row = tk.Frame(pad, bg=_INNER)     # 窄栏放不下 4 项横排 → 2×2 网格
+        meta_row.pack(fill="x", pady=(S(10), S(4)))
+        meta_row.columnconfigure(0, weight=1)
+        meta_row.columnconfigure(1, weight=1)
+        for i, (lab, val) in enumerate((("节点", str(n)), ("输入", inN),
+                                        ("输出", outN), ("目标", "ComfyUI :8188"))):
+            cell = tk.Frame(meta_row, bg=_INNER)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", pady=S(2))
+            tk.Label(cell, text=lab + " ", bg=_INNER, fg=TXT2, font=f(8)).pack(side="left")
+            tk.Label(cell, text=val, bg=_INNER, fg=TXT, font=f(8, True)).pack(side="left")
+
+        acts = tk.Frame(pad, bg=_INNER)
+        acts.pack(fill="x", pady=(S(10), 0))
+        RButton(acts, text="推送到 ComfyUI", command=lambda: self._push(False),
+                fill=TEAL, fg=DARKTX, border=None, outer=_INNER, font=f(9), pady=6,
+                stretch=True).pack(side="left", fill="x", expand=True)
+        RButton(acts, text="加入队列", command=lambda: self._push(True),
+                fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
+                font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
+                                                     padx=(S(8), 0))
+        self._changed()
+
+    def _push(self, to_queue):
+        if self.on_push:
+            self.on_push(to_queue)
+
+    def _changed(self):
+        if self.on_change:
+            self.on_change()
+
+
 # ---------------------------------------------------------------- 启动期基础设施
 def enable_dpi_awareness():
     """开启进程级 DPI 感知（必须在创建 Tk 窗口之前调用，否则高分屏发虚）。"""
