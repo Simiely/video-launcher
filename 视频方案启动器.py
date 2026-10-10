@@ -134,7 +134,8 @@ class App:
         self._run_btn = None            # 当前引擎卡上的「运行」按钮
 
         self._build_ui()
-        self._select_nav("flashvsr")
+        # 启动时只选中默认引擎、不滚动：让中栏停在顶部（服务状态条 + 工作流卡首屏可见）
+        self._select_nav("flashvsr", scroll=False)
         self._drain_log()
         self._probe_loop()
 
@@ -163,10 +164,9 @@ class App:
         tk.Label(brand, text="视频启动器", bg=CARD, fg=TXT, font=f(11, True)).pack(
             side="left", padx=(S(10), 0))
 
+        # 只放「会切换中间内容」的入口：服务状态条与工作流卡都在中栏常显，无需导航项
         self.nav_items = {}
         defs = [
-            ("service", "服务", BLUE, None),
-            ("workflow", "工作流", BLUE, len(WORKFLOWS)),
             ("flashvsr", "FlashVSR", BLUE, None),
             ("seedvr2", "SeedVR2", PURP, None),
             ("minimax", "MiniMax H3", TEAL, None),
@@ -472,7 +472,8 @@ class App:
         link.pack(pady=(S(9), 0))
         link.bind("<Enter>", lambda e: link.configure(fg=TXT))
         link.bind("<Leave>", lambda e: link.configure(fg=TXT2))
-        link.bind("<Button-1>", lambda e: self._select_nav("workflow"))
+        # 只滚动到工作流卡，不动左导航高亮（工作流已不是导航项）
+        link.bind("<Button-1>", lambda e: self._scroll_to(self.wf_card))
 
     # ---- 设置卡 ----
     def _build_settings_card(self, parent):
@@ -545,17 +546,22 @@ class App:
         self.pct_lab.pack(side="right")
 
     # ================================================================ 导航 / 滚动
-    def _select_nav(self, key):
+    def _select_nav(self, key, scroll=True):
+        """左导航点击：切换引擎标签，并把中间舞台滚到对应卡片。
+
+        参数 scroll=False 用于程序启动时——只选中默认引擎，不滚动，
+        让中栏停在顶部（服务状态条 + 工作流卡默认可见）。
+
+        注：中栏顶部的服务状态条（置顶常显）与舞台首屏的工作流卡不进导航 ——
+        它们无需点击就已可见，滚动入口改走各引擎卡里的「从工作流库选择 →」链接。
+        """
         for k, it in self.nav_items.items():
             it.set_active(k == key)
         if key in ("flashvsr", "seedvr2", "minimax"):
             self._select_engine(key)
-            self._scroll_to(self.engine_card)
-        elif key == "service":
-            self.stage_cv.yview_moveto(0)
-        elif key == "workflow":
-            self._scroll_to(self.wf_card)
-        elif key == "settings":
+            if scroll:
+                self._scroll_to(self.engine_card)
+        elif key == "settings" and scroll:
             self._scroll_to(self.settings_card)
 
     def _scroll_to(self, widget):
@@ -579,7 +585,8 @@ class App:
         self._render_wf_detail(wf, None)
         tag = "lw" if wf["engine"] == "minimax" else "ok"
         self.log("[工作流] 已选择 %s" % wf["name"], tag)
-        self._select_engine(wf["engine"])
+        # 同步左导航高亮与引擎标签（工作流自带引擎），不滚动以免把刚展开的详情面板甩出视野
+        self._select_nav(wf["engine"], scroll=False)
 
     def _load_wf_json(self):
         p = filedialog.askopenfilename(title="选择 ComfyUI 工作流 .json",

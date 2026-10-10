@@ -8,6 +8,7 @@ Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自�
   - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1035 行 / 逻辑行 890）
   - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 532 行，**不 import 业务代码**）
 - 界面：深色 Fluent **三栏控制台**（左导航 / 中内容 / 右日志），蓝本为分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`
+- 左导航（v1.2.1 起）只放**会切换中栏内容**的入口：`FlashVSR / SeedVR2 / MiniMax H3 / 设置`。服务状态条（中栏置顶常显）与工作流卡（舞台首屏）不占导航项
 - 入口：`main()` → `ui_kit.init_scaling()` → `App(root)` → `root.mainloop()`
 - 配置：模块级 `CONFIG` 字典 + 可选同目录 `启动器配置.json` 覆盖
 - 交付：源码直接运行，或用 PyInstaller 打成单文件 exe（会跟随 `import ui_kit` 自动打进去）
@@ -18,12 +19,16 @@ Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自�
 main()
  └─ App(root)
      ├─ _build_ui()            三栏：_build_sidebar / _build_center / _build_logpane
-     │   ├─ _build_sidebar()   左导航（NavItem）
-     │   ├─ _build_center()    服务状态条（置顶）+ 滚动舞台
-     │   │   ├─ _build_workflow_card()  下拉 + 加载 .json + 详情面板
+     │   ├─ _build_sidebar()   左导航（NavItem）：引擎三项 + 设置
+     │   ├─ _build_center()    服务状态条（置顶常显）+ 滚动舞台
+     │   │   ├─ _build_workflow_card()  下拉 + 加载 .json + 详情面板（舞台首屏）
      │   │   ├─ _build_engine_area()    引擎标签 + 切换单卡
      │   │   └─ _build_settings_card()  配置只读展示 + 打开目录
      │   └─ _build_logpane()   日志（着色）+ 进度条
+     ├─ 导航 / 滚动
+     │   ├─ _select_nav(key, scroll=True)  切引擎标签 + 滚到对应卡片（scroll=False 只切不滚）
+     │   ├─ _scroll_to(widget)  按控件 y 换算 yview_moveto
+     │   └─ _goto_wf()          引擎卡里的「从工作流库选择 →」，纯滚动到工作流卡
      ├─ 服务控制
      │   ├─ svc_start()        Popen(comfy_py -u main.py --disable-pinned-memory
      │   │                          --disable-async-offload --reserve-vram 1)
@@ -38,7 +43,7 @@ main()
      │   ├─ run_flashvsr()     -InputPath / -Mode / -Scale / -Format / -AutoStart
      │   └─ run_seedvr2()      -InputPath / -Profile / -Resolution / -Overwrite
      ├─ 工作流
-     │   ├─ _on_wf_select()    选内置工作流 → 详情面板 + 切到对应引擎
+     │   ├─ _on_wf_select()    选内置工作流 → 详情面板 + 切引擎并同步导航高亮（不滚动）
      │   ├─ _load_wf_json()    读本地 .json → 数节点 → 存 _loaded_api
      │   └─ _push_wf()         对已加载的 API 图 POST /prompt
      ├─ 后台探测
@@ -188,8 +193,26 @@ main()
 - 遗留：主程序 MI 仍为 C(0.99)——890 逻辑行的单个 `App` 类 Halstead 体积天然高；若还要改善，可把 `App` 的卡片构建方法外移成 `ui_cards.py`
 - 预防：拆分判据用**可核查的数字**（radon SLOC / pylint 阈值），不靠"感觉文件有点长"
 
+### 问题：左导航该放哪些入口
+
+**TL;DR**：只放「会切换中栏内容」的入口；中栏已常显的东西不要再占导航项，否则是重复入口且让导航失去"切换"语义。
+
+- 问题：v1.2.0 按设计稿把「服务 / 工作流」也做成了导航项，但这两块本来就在中栏：服务状态条置顶**不滚动**常显、工作流卡是舞台**首屏第一张**卡。导航点它们只是"滚一下"，属于重复
+- 附带问题：程序启动时 `_select_nav("flashvsr")` 会自动滚到引擎参数卡，把工作流卡顶出视野 —— 于是"工作流在中栏可见"这件事在默认视图里并不成立
+- 解决：① 导航去掉 `service` / `workflow` 两项，只留引擎三项 + 设置；② `_select_nav` 增加 `scroll` 开关，启动用 `scroll=False` 让中栏停在顶部（服务条 + 工作流卡首屏可见）；③ 引擎卡里的「从工作流库选择 →」改为纯 `_scroll_to(wf_card)`，不再借道导航（否则会顺带清空导航高亮）
+- 预防：加导航项前先问「它对应的内容是否会随点击**变化**」。只是"跳到某块常显内容"的，做成页面内链接/滚动，别做成导航项
+
+### 问题：导航高亮与引擎标签不一致
+
+**TL;DR**：任何"绕过导航"直接切引擎的路径，都要顺手同步导航高亮。
+
+- 问题：从工作流下拉选一套内置工作流时，`_on_wf_select` 直接调 `_select_engine()` 切了引擎标签，但左导航仍高亮旧项 —— 两处状态说两套话
+- 解决：改为 `self._select_nav(wf["engine"], scroll=False)`：既切引擎又同步高亮，且不滚动（避免把刚展开的工作流详情面板甩出视野）
+- 预防：凡是能改变"当前引擎"的入口，统一走 `_select_nav`；`scroll=False` 供"不该跳视野"的场景使用
+
 ## 文档基线
 
+- 2026-10-10（v1.2.1）：**精简左导航**（去掉服务/工作流两项、启动不滚动、工作流链接改纯滚动、高亮一致性），新增「左导航该放哪些入口 / 导航高亮与引擎标签不一致」两篇问题记录
 - 2026-10-10（v1.2.0）：**深色三栏 UI 重构** —— 抽出 `ui_kit.py` 自绘控件库；新增「跨线程 root.after / 圆角卡片画法 / transparent 颜色名 / 窄窗口 pack 顺序 / 高分屏缩放 / 拆分阈值」六篇问题记录
 - 2026-10-10：静态审计（radon/pylint/vulture）+ 运行期冒烟，修 v1.1.0 两个 P0（`alive` 未定义 / `Text.count` tuple 陷阱），新增本两篇问题记录
 - 2026-10-10（`755c05a`）：稳定性+性能加固，新增启动中锁 / 按钮态统一 / 日志裁剪两篇问题记录
