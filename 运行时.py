@@ -4,7 +4,7 @@
 单独成模块的原因很具体：
   * AGENTS 的硬约定是「单文件逻辑行超过 1000 就拆」—— 主文件加上 v1.2.5 的
     崩溃落盘、上排高度自适配，以及 v1.2.6 的日志清洗后到了 1000 出头，必须拆；
-  * 这里的四样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON / 日志行解析）
+  * 这里的五样东西（子进程"不弹黑窗"标记 / 崩溃落盘 / 绕代理取 JSON / 日志行解析 / 日志落盘）
     跟 tkinter 毫无关系：塞进 ui_kit 会污染"自绘控件库"的职责，
     留在主文件又挤占业务装配的位置。
 
@@ -193,3 +193,84 @@ def watch_tk_errors(root, path):
     """
     type(root).report_callback_exception = staticmethod(
         lambda exc, val, tb: write_crash(path, "Tk 回调", type(val), val, tb))
+
+
+# ================================================================ 日志落盘
+# 界面上的日志区只活在内存里：关窗即失，且超过 MAX_LOG_LINES 会裁掉**最旧的**行 ——
+# 而被裁掉的恰恰是 ComfyUI 启动参数、模型加载、自定义节点失败这类最该留下的信息。
+# 所以加一条落盘旁路：界面显示照旧，同时把每一行写进 logs/ 下的文件。
+# 开关关闭时用 NoopLog 占位，日志漏斗处因此不必写 if 判断。
+LOG_FLUSH_EVERY = 1.0      # 秒：定时 flush 间隔。崩溃时最多丢这一段时间的日志，
+                           # 但绝不会出现"文件里一个字都没有"（首行是立即落盘的）
+
+
+class LogFile:
+    """把日志行同时写进磁盘文件；构造失败自动降级（degraded 非空）。
+
+    刻意约定：调用方传进来的是**已经 strip_ansi 的界面行**，
+    所以文件内容与界面显示逐行一致 —— 出问题时两边能直接对照。
+    """
+
+    def __init__(self, log_dir, prefix="运行"):
+        """建目录并按时间戳开新文件；任何失败都记进 degraded 并降级为不落盘。"""
+        self.fh = None
+        self.path = ""
+        self.lines = 0
+        self.degraded = ""              # 非空 = 已降级，值为原因
+        self._last_flush = 0.0
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            name = "%s-%s.log" % (prefix, time.strftime("%Y-%m-%d_%H%M%S"))
+            self.path = os.path.join(log_dir, name)
+            # 固定 newline="\n"：避免 Windows 下写成 \r\n 影响逐行核对
+            self.fh = open(self.path, "w", encoding="utf-8",
+                           errors="replace", newline="\n")
+        except Exception as e:
+            self.degraded = "%s: %s" % (type(e).__name__, e)
+
+    def write(self, line):
+        if self.fh is None:
+            return
+        try:
+            self.fh.write(line + "\n")
+            self.lines += 1
+            now = time.time()
+            if now - self._last_flush >= LOG_FLUSH_EVERY:
+                self.fh.flush()
+                self._last_flush = now
+        except Exception as e:          # 磁盘满 / 网盘掉线：降级即可，界面不能受影响
+            self.degraded = "%s: %s" % (type(e).__name__, e)
+            self._close_quiet()
+
+    def close(self):
+        """flush 后关闭。退出路径上 flush 失败只记原因，不作补救。"""
+        try:
+            if self.fh:
+                self.fh.flush()
+        except Exception as e:
+            self.degraded = self.degraded or ("close: %s" % e)
+        finally:
+            self._close_quiet()
+
+    def _close_quiet(self):
+        fh, self.fh = self.fh, None
+        if fh is None:
+            return
+        try:
+            fh.close()
+        except Exception:
+            return          # 句柄已失效或已关闭：关闭失败无需上报
+
+
+class NoopLog:
+    """开关关闭时的占位对象：让日志漏斗不必写 if 判断。"""
+
+    path = ""
+    degraded = ""
+    lines = 0
+
+    def write(self, line):
+        """开关关闭：不落盘。"""
+
+    def close(self):
+        """开关关闭：无句柄需关。"""

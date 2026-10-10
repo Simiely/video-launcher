@@ -48,6 +48,7 @@ CONFIG = {
     "input_dir":    r"E:\VideoUpscale\input",
     "output_dir":   r"E:\VideoUpscale\output",
     "comfy_url":    "http://127.0.0.1:8188",
+    "log_dir":      os.path.join(APP_DIR, "logs"),   # 日志落盘目录（开关见 log_to_file）
 }
 
 _cfg_path = os.path.join(APP_DIR, "启动器配置.json")
@@ -166,6 +167,10 @@ class App:
         self._sync_pending = False      # after_idle 合并标记
         self._syncing = False           # 上排高度实测中（防 update_idletasks 重入）
         self._nvsmi_ok = True           # nvidia-smi 是否可用（不可用就不再反复起进程）
+        # 日志落盘旁路（v1.2.8）：默认关闭；关着时是 NoopLog，日志漏斗处就不必判空
+        self.logfile = rt.LogFile(CONFIG["log_dir"]) if CONFIG.get("log_to_file") else rt.NoopLog()
+        if self.logfile.degraded:
+            self.log("[日志] 落盘失败，已降级为不落盘：%s" % self.logfile.degraded, "warn")
 
         self._build_ui()
         # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
@@ -818,6 +823,7 @@ class App:
             except queue.Empty:
                 return dirty
             line = strip_ansi(line)       # ComfyUI 新版会注入 ANSI 颜色码，Tk 不认 → 会显示成方块
+            self.logfile.write(line)      # 落盘旁路（v1.2.8）：与界面同一行，故文件与界面逐行一致
             self.logtxt.configure(state="normal")
             self.logtxt.insert("end", line + "\n", tag or self._tag_for(line) or ())
             # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
@@ -1150,6 +1156,7 @@ class App:
                     self.svc_proc.terminate()
                 except Exception:
                     pass  # 同上：退出路径上不作补救，避免"退出时报错"比问题本身更烦人
+        self.logfile.close()          # 落盘旁路：退出前 flush，别把最后几行留在缓冲里
         self.root.destroy()
 
 
