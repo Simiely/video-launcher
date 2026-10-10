@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """视频方案启动器 —— ComfyUI 底座 + FlashVSR / SeedVR2 / MiniMax H3 一键启动。
 
-界面：深色 Fluent 三栏控制台（左导航 / 中内容 / 右栏＝工作流卡 + 运行日志），
+界面：深色 Fluent 三栏控制台（左＝导航 + 设置 / 中＝引擎参数 / 右＝服务 + 工作流 + 日志），
       纯 tkinter 自绘（圆角卡片 + 阴影 + 圆角按钮），零第三方依赖。
       设计蓝本见仓库分支 ui-redesign 的 redesign/video_launcher_sidebar.html。
 
@@ -134,7 +134,7 @@ class App:
         self._run_btn = None            # 当前引擎卡上的「运行」按钮
 
         self._build_ui()
-        # 启动时只选中默认引擎、不滚动：让中栏停在顶部（服务状态条首屏可见）
+        # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
         self._select_nav("flashvsr", scroll=False)
         self._drain_log()
         self._probe_loop()
@@ -157,6 +157,7 @@ class App:
         side.configure(width=S(206))
         side.pack_propagate(False)
         b = side.body
+        self.sidebar = b                     # 左栏 body（设置常驻在此，渲染验证要断言它的落点）
 
         brand = tk.Frame(b, bg=CARD)
         brand.pack(fill="x", pady=(0, S(14)), padx=S(2))
@@ -164,60 +165,33 @@ class App:
         tk.Label(brand, text="视频启动器", bg=CARD, fg=TXT, font=f(11, True)).pack(
             side="left", padx=(S(10), 0))
 
-        # 只放「会切换中间内容」的入口：服务状态条（中栏置顶）与工作流卡（右栏顶部）都常显，无需导航项
+        # 导航只放「会切换中栏内容」的入口：三个引擎。
+        # 服务卡（右栏顶部）、工作流卡（右栏中部）、设置（左栏下方）都是常显区，不做导航项
         self.nav_items = {}
         defs = [
-            ("flashvsr", "FlashVSR", BLUE, None),
-            ("seedvr2", "SeedVR2", PURP, None),
-            ("minimax", "MiniMax H3", TEAL, None),
+            ("flashvsr", "FlashVSR", BLUE),
+            ("seedvr2", "SeedVR2", PURP),
+            ("minimax", "MiniMax H3", TEAL),
         ]
-        for key, text, color, badge in defs:
+        for key, text, color in defs:
             it = NavItem(b, text, command=lambda k=key: self._select_nav(k),
-                         color=color, badge=badge, outer=CARD)
+                         color=color, outer=CARD)
             it.pack(fill="x", pady=1)
             self.nav_items[key] = it
 
-        tk.Frame(b, height=1, bg=BORDER).pack(fill="x", pady=S(10), padx=S(6))
-        it = NavItem(b, "设置", command=lambda: self._select_nav("settings"),
-                     color=CARD2, outer=CARD)
-        it.pack(fill="x", pady=1)
-        self.nav_items["settings"] = it
+        tk.Frame(b, height=1, bg=BORDER).pack(fill="x", pady=S(12), padx=S(6))
+        self._build_settings_section(b)      # 设置常驻左栏下方，不再点导航到中栏刷出
 
-    # ---- 中：服务条 + 滚动舞台 ----
+    # ---- 中：滚动舞台（引擎区）----
     def _build_center(self, parent):
         center = tk.Frame(parent, bg=BG)
         center.grid(row=0, column=1, sticky="nsew")
-        center.rowconfigure(1, weight=1)
+        center.rowconfigure(0, weight=1)
         center.columnconfigure(0, weight=1)
 
-        # 服务状态条（置顶，不随下方滚动）
-        top = RoundedFrame(center, outer=BG, pad=(8, 2), radius=S(12))
-        top.grid(row=0, column=0, sticky="ew", pady=(0, S(14)))
-        t = top.body
-        self.svc_dot = tk.Canvas(t, width=S(9), height=S(9), bg=CARD, highlightthickness=0, bd=0)
-        self._dot_id = self.svc_dot.create_oval(0, 0, S(9), S(9), fill=GREEN, outline="")
-        self.svc_dot.pack(side="left", padx=(0, S(10)))
-        tk.Label(t, text="ComfyUI 服务", bg=CARD, fg=TXT, font=f(11, True)).pack(side="left")
-        self.svc_pill = tk.Label(t, text="未运行", bg=CARD2, fg=MUTED, font=f(9, True),
-                                 padx=S(9), pady=S(2))
-        self.svc_pill.pack(side="left", padx=(S(10), 0))
-        # 右侧按钮组先占位（side=right），再让 URL 吃剩余宽度 ——
-        # 否则窄窗口下 URL 撑满会把按钮挤出卡片边界（设计稿：URL 可压缩、按钮固定）
-        self.btn_stop = RButton(t, text="停止服务", command=self.svc_stop, fill=CARD2,
-                                fg=TXT, outer=CARD, font=f(9), pady=6, state="disabled")
-        self.btn_stop.pack(side="right")
-        RButton(t, text="打开网页", command=self.open_web, fill=CARD2, fg=TXT,
-                outer=CARD, font=f(9), pady=6).pack(side="right", padx=(S(8), 0))
-        self.btn_primary = RButton(t, text="启动服务", command=self._primary_service,
-                                   fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6)
-        self.btn_primary.pack(side="right", padx=(S(8), 0))
-        self.svc_url = tk.Label(t, text=CONFIG["comfy_url"], bg=CARD, fg=TXT2, font=f(9),
-                                anchor="w")
-        self.svc_url.pack(side="left", fill="x", expand=True, padx=(S(12), 0))
-
-        # 滚动舞台
+        # 滚动舞台：服务卡已挪到右栏顶部、设置已挪到左栏下方，此处只剩引擎区
         wrap = tk.Frame(center, bg=BG)
-        wrap.grid(row=1, column=0, sticky="nsew")
+        wrap.grid(row=0, column=0, sticky="nsew")
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
         self.stage_cv = tk.Canvas(wrap, bg=BG, highlightthickness=0, bd=0)
@@ -233,7 +207,6 @@ class App:
         self.stage_cv.bind("<Leave>", lambda e: self.stage_cv.unbind_all("<MouseWheel>"))
 
         self._build_engine_area(self.stage)
-        self._build_settings_card(self.stage)
 
     def _section(self, parent, text):
         tk.Label(parent, text=text, bg=BG, fg=TXT2, font=f(9), anchor="w").pack(
@@ -346,32 +319,14 @@ class App:
                 font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
                                                      padx=(S(8), 0))
 
-    # ---- 引擎区（标签切换单卡） ----
+    # ---- 引擎区（单卡，切换交给左导航）----
     def _build_engine_area(self, parent):
-        self._section(parent, "引擎 · 点击标签切换，默认 FLASHVSR")
-
-        tabs = tk.Frame(parent, bg=BG)
-        tabs.pack(fill="x", pady=(0, S(12)))
-        self.tab_btns = {}
-        for i, key in enumerate(("flashvsr", "seedvr2", "minimax")):
-            meta = ENG[key]
-            b = RButton(tabs, text=meta["label"], command=lambda k=key: self._select_engine(k),
-                        fill=CARD2, fg=TXT2, border=BORDER, outer=BG, font=f(10, True),
-                        stretch=True, pady=8)
-            b.pack(side="left", fill="x", expand=True,
-                   padx=(0, S(8)) if i < 2 else 0)
-            self.tab_btns[key] = b
+        # v1.2.3：去掉中栏那排 FlashVSR / SeedVR2 / MiniMax H3 切换按钮 ——
+        # 左导航已经承担"切引擎"，两处入口重复且占掉首屏高度
+        self._section(parent, "引擎 · 由左侧导航切换")
 
         self.engine_card = RoundedFrame(parent, outer=BG, pad=(6, 6))
         self.engine_card.pack(fill="x", pady=(0, S(16)))
-
-    def _select_engine(self, key):
-        for k, b in self.tab_btns.items():
-            on = (k == key)
-            col = ENG[k]["color"]
-            b.set_fill(col if on else CARD2, DARKTX if on else TXT2,
-                       "transparent" if on else BORDER)
-        self._render_engine(key)
 
     def _render_engine(self, key):
         meta = ENG[key]
@@ -468,7 +423,7 @@ class App:
         return btn
 
     def _goto_wf(self, parent):
-        link = tk.Label(parent, text="工作流选择在右栏上方 ↑", bg=CARD, fg=TXT2, font=f(9),
+        link = tk.Label(parent, text="工作流选择在右栏 ↑", bg=CARD, fg=TXT2, font=f(9),
                         cursor="hand2")
         link.pack(pady=(S(9), 0))
         link.bind("<Enter>", lambda e: link.configure(fg=TXT))
@@ -480,41 +435,94 @@ class App:
         self.wf_card.set_border(BLUE)
         self.root.after(500, lambda: self.wf_card.set_border(BORDER))
 
-    # ---- 设置卡 ----
-    def _build_settings_card(self, parent):
-        self._section(parent, "设置")
-        card = RoundedFrame(parent, outer=BG, pad=(6, 6))
-        card.pack(fill="x", pady=(0, S(6)))
-        self.settings_card = card
-        b = card.body
+    # ---- 左栏下方：设置（常驻，窄栏两行式）----
+    def _build_settings_section(self, parent):
+        """设置常驻左栏下方（v1.2.3）：不再做成「点导航 → 中栏单独刷出设置页」。
+
+        左栏可用宽只有 ~174px，所以每项拆两行：标签行（右侧挂「打开」链接）+ 值行（自动换行）。
+        """
+        tk.Label(parent, text="设置", bg=CARD, fg=TXT2, font=f(9), anchor="w").pack(
+            fill="x", padx=S(2), pady=(0, S(2)))
         keys = [("comfy_dir", "ComfyUI 目录", True), ("comfy_py", "ComfyUI Python", False),
                 ("deploy_root", "部署脚本目录", True), ("ffmpeg_dir", "ffmpeg 目录", True),
                 ("input_dir", "输入目录", True), ("output_dir", "输出目录", True),
                 ("comfy_url", "服务地址", False)]
         for k, label, is_dir in keys:
-            row = tk.Frame(b, bg=CARD)
-            row.pack(fill="x", pady=S(3))
-            tk.Label(row, text=label, bg=CARD, fg=TXT2, font=f(9), width=14, anchor="w").pack(side="left")
-            tk.Label(row, text=CONFIG.get(k, ""), bg=CARD, fg=TXT, font=f(9), anchor="w").pack(
-                side="left", fill="x", expand=True)
+            row = tk.Frame(parent, bg=CARD)
+            row.pack(fill="x", pady=(S(6), 0))
+            tk.Label(row, text=label, bg=CARD, fg=TXT2, font=f(8), anchor="w").pack(side="left")
             if is_dir:
-                RButton(row, text="打开", command=lambda p=CONFIG.get(k, ""): self._open_dir(p),
-                        fill=CARD2, fg=TXT, outer=CARD, font=f(8), padx=10, pady=3).pack(side="right")
-        row = tk.Frame(b, bg=CARD)
-        row.pack(fill="x", pady=(S(8), 0))
-        RButton(row, text="打开输入目录", command=lambda: self._open_dir(CONFIG["input_dir"]),
-                fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6).pack(side="left")
-        RButton(row, text="打开输出目录", command=lambda: self._open_dir(CONFIG["output_dir"]),
-                fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6).pack(side="left", padx=(S(8), 0))
+                link = tk.Label(row, text="打开", bg=CARD, fg=TXT2, font=f(8), cursor="hand2")
+                link.pack(side="right")
+                link.bind("<Enter>", lambda e, w=link: w.configure(fg=BLUE))
+                link.bind("<Leave>", lambda e, w=link: w.configure(fg=TXT2))
+                link.bind("<Button-1>", lambda e, p=CONFIG.get(k, ""): self._open_dir(p))
+            tk.Label(parent, text=CONFIG.get(k, ""), bg=CARD, fg=TXT, font=f(8), anchor="w",
+                     justify="left", wraplength=S(168)).pack(fill="x")
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(S(10), 0))
+        RButton(row, text="打开输入", command=lambda: self._open_dir(CONFIG["input_dir"]),
+                fill=CARD2, fg=TXT, outer=CARD, font=f(8), pady=5,
+                stretch=True).pack(side="left", fill="x", expand=True)
+        RButton(row, text="打开输出", command=lambda: self._open_dir(CONFIG["output_dir"]),
+                fill=CARD2, fg=TXT, outer=CARD, font=f(8), pady=5,
+                stretch=True).pack(side="left", fill="x", expand=True, padx=(S(6), 0))
 
-    # ---- 右：工作流（上，常显）+ 日志（下，占满剩余）----
+    # ---- 服务卡（右栏顶部，常显）----
+    def _build_service_card(self, parent):
+        """ComfyUI 服务卡：原先在中栏置顶，v1.2.3 按要求挪到右栏、工作流卡上方。
+
+        右栏 ~324 可用宽放不下一整行（圆点+标题+徽标+地址+三个按钮），
+        故拆成两行：状态行（左：圆点/标题/徽标，右：版本+显存）+ 地址行 + 按钮行。
+        """
+        card = RoundedFrame(parent, outer=BG, pad=(6, 6))
+        card.pack(fill="x", pady=(0, S(14)))
+        self.svc_card = card
+        b = card.body
+
+        head = tk.Frame(b, bg=CARD)
+        head.pack(fill="x")
+        self.svc_dot = tk.Canvas(head, width=S(9), height=S(9), bg=CARD,
+                                 highlightthickness=0, bd=0)
+        self._dot_id = self.svc_dot.create_oval(0, 0, S(9), S(9), fill=GREEN, outline="")
+        self.svc_dot.pack(side="left", padx=(0, S(10)))
+        tk.Label(head, text="ComfyUI 服务", bg=CARD, fg=TXT, font=f(10, True)).pack(side="left")
+        self.svc_pill = tk.Label(head, text="未运行", bg=CARD2, fg=MUTED, font=f(9, True),
+                                 padx=S(9), pady=S(2))
+        self.svc_pill.pack(side="left", padx=(S(10), 0))
+        # 实时状态（版本 / 显存）跟着服务卡走
+        self.stat_lab = tk.Label(head, text="", bg=CARD, fg=MUTED, font=f(8))
+        self.stat_lab.pack(side="right")
+
+        self.svc_url = tk.Label(b, text=CONFIG["comfy_url"], bg=CARD, fg=TXT2, font=f(8),
+                                anchor="w")
+        self.svc_url.pack(fill="x", pady=(S(7), S(9)))
+
+        row = tk.Frame(b, bg=CARD)
+        row.pack(fill="x")
+        self.btn_primary = RButton(row, text="启动服务", command=self._primary_service,
+                                   fill=CARD2, fg=TXT, outer=CARD, font=f(9), pady=6,
+                                   stretch=True)
+        self.btn_primary.pack(side="left", fill="x", expand=True)
+        RButton(row, text="打开网页", command=self.open_web, fill=CARD2, fg=TXT,
+                outer=CARD, font=f(9), pady=6, stretch=True).pack(
+                    side="left", fill="x", expand=True, padx=(S(6), S(6)))
+        self.btn_stop = RButton(row, text="停止服务", command=self.svc_stop, fill=CARD2,
+                                fg=TXT, outer=CARD, font=f(9), pady=6, state="disabled",
+                                stretch=True)
+        self.btn_stop.pack(side="left", fill="x", expand=True)
+
+    # ---- 右：服务（上）+ 工作流（中）+ 日志（下，占满剩余）----
     def _build_logpane(self, parent):
         col = tk.Frame(parent, bg=BG)
         col.grid(row=0, column=2, sticky="nsew", padx=(S(14), 0))
         col.configure(width=S(360))
         col.pack_propagate(False)
 
-        # 上：工作流卡（常显，不随中栏滚动）
+        # 上：ComfyUI 服务卡（常显）
+        self._build_service_card(col)
+
+        # 中：工作流卡（常显，不随中栏滚动）
         self._build_workflow_card(col)
 
         # 下：日志卡（吃掉剩余高度）
@@ -530,9 +538,6 @@ class App:
         clr.bind("<Enter>", lambda e: clr.configure(fg=TXT))
         clr.bind("<Leave>", lambda e: clr.configure(fg=TXT2))
         clr.bind("<Button-1>", lambda e: self.clear_log())
-        # 实时状态（版本 / 显存）放常驻可见的右栏标题行，避免顶栏被挤（设计稿顶栏只有 URL）
-        self.stat_lab = tk.Label(head, text="", bg=CARD, fg=MUTED, font=f(8))
-        self.stat_lab.pack(side="right", padx=(0, S(12)))
         tk.Frame(b, height=1, bg=BORDER).pack(fill="x")
 
         self.logtxt = tk.Text(b, bg=CARD, fg=TXT2, bd=0, highlightthickness=0,
@@ -559,22 +564,19 @@ class App:
 
     # ================================================================ 导航 / 滚动
     def _select_nav(self, key, scroll=True):
-        """左导航点击：切换引擎标签，并把中间舞台滚到对应卡片。
+        """左导航点击：切引擎（重绘引擎卡），并把中间舞台滚到引擎卡。
 
-        参数 scroll=False 用于程序启动时——只选中默认引擎，不滚动，
-        让中栏停在顶部（服务状态条首屏可见）。
+        参数 scroll=False 用于程序启动时——只选中默认引擎、不滚动。
 
-        注：服务状态条（中栏置顶）与工作流卡（右栏顶部）都是常显区，不进导航 ——
-        它们无需点击就已可见，导航只保留「会切换中栏内容」的引擎项与设置。
+        注：引擎切换只有左导航这一个入口（v1.2.3 去掉了中栏重复的切换按钮）；
+        服务卡（右栏顶部）、工作流卡（右栏中部）、设置（左栏下方）都是常显区，不做导航项。
         """
         for k, it in self.nav_items.items():
             it.set_active(k == key)
         if key in ("flashvsr", "seedvr2", "minimax"):
-            self._select_engine(key)
+            self._render_engine(key)
             if scroll:
                 self._scroll_to(self.engine_card)
-        elif key == "settings" and scroll:
-            self._scroll_to(self.settings_card)
 
     def _scroll_to(self, widget):
         self.stage.update_idletasks()
