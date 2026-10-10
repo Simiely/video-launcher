@@ -86,6 +86,21 @@ main()
 - 解决：页签 ③ 只做「启动服务并打开网页」，把实测参数（864×480 / 124 帧 / 20 步，3 分 13 秒/条）写进界面提示
 - 预防：后续若要 GUI 化 H3，应先固定一套 API 工作流（参考 `video-upscale-deploy/02-FlashVSR/workflow_api.json` 的做法）
 
+### 问题：连点「启动服务」起多个 ComfyUI 进程
+
+**TL;DR**：`svc_start()` 只用 `comfy_alive()` 判断，但服务就绪前它一直是 `False`，连点会在忙等期内 Popen 出第二个进程、首个句柄被覆盖成孤儿。
+
+- 解决：新增 `_svc_starting` 启动中锁；`svc_start()` 命中锁直接 return，锁在「`_svc_wait_ready` 就绪 / `_svc_reader` 进程退出 / 5 分钟超时」三处统一解除。
+- 预防：任何「拉起长启动进程」的入口都要有进行中锁，不能只靠 `comfy_alive()` 这类异步探测判断。
+
+### 问题：长任务日志无限增长拖慢 UI
+
+**TL;DR**：`ScrolledText` 只 `insert` 不裁剪，SeedVR2 跑 20+ 分钟后行数上千，每次插入 + `see("end")` 越来越慢、内存只涨不跌。
+
+- 解决：`_drain_log` 在插入后若行数超过 `MAX_LOG_LINES = 2000` 就 `delete` 最旧的行（模块级常量，便于调）。
+- 预防：任何会高频追加的文本控件都要设上限或环形缓冲，不能无脑 append。
+
 ## 文档基线
 
+- 2026-10-10（`755c05a`）：稳定性+性能加固，新增启动中锁 / 按钮态统一 / 日志裁剪两篇问题记录
 - 2026-10-09：建立四件套（README / AGENTS / DEVELOPMENT / CHANGELOG）
