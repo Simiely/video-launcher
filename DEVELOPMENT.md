@@ -4,62 +4,77 @@
 
 Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自己不做推理，只负责「拉服务 / 传参调脚本 / 回传日志」。
 
-- 组成（v1.2.0 起为两文件，零第三方依赖）：
-  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1035 行 / 逻辑行 890）
-  - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 532 行，**不 import 业务代码**）
+- 组成（v1.2.5 起为三文件，零第三方依赖）：
+  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1190 行 / 逻辑行 984）
+  - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 537 行，**不 import 业务代码**）
+  - `运行时.py` —— 与界面无关的运行时支撑（约 105 行 / 逻辑行 73）：子进程"不弹黑窗"标记、
+    崩溃落盘、绕代理 HTTP。**不 import 业务代码，也不 import tkinter / ui_kit**（单向：主程序 → 运行时）
 - 界面：深色 Fluent **三栏控制台**，蓝本为分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`
-- **三栏分工（v1.2.4 收敛后的稳定形态）**：整体是 **2×3 网格**——上排左 / 中 / 右三栏，下排一整条运行日志（`columnspan=2`，横跨中栏 + 右栏）
+- **三栏分工（v1.2.5 收敛后的稳定形态）**：整体是 **2×3 网格**——上排左 / 中 / 右三栏，下排一整条运行日志（`columnspan=2`，横跨中栏 + 右栏）
   - **左栏**（跨两行、通高）＝导航（三个引擎，NavItem）+ **设置常驻**（配置只读展示 + 打开目录）。左栏是"导航 + 常驻信息"，不承载会切换的内容
-  - **中栏**（上排）＝滚动舞台，只放**引擎参数卡**（单卡）。引擎切换只有左导航一个入口
+  - **中栏**（上排）＝滚动舞台，只放**引擎参数卡**（单卡，无小标题、无切换按钮）。引擎切换只有左导航一个入口
   - **右栏**（上排）＝自上而下 **服务卡 → 工作流卡**，都常显不滚动
   - **下排**＝**运行日志卡**（含进度条），横跨中栏 + 右栏
 - 什么地方放什么（v1.2.3 定的规矩）：**常显区不进导航项**；"点一下就换掉中栏内容"的才是导航项。所以服务卡 / 工作流卡 / 设置都不是导航项
-- **窗口尺寸按内容需求倒推**（v1.2.4 教训）：上排要同时容下引擎卡（需 ~542）与右栏（服务 128 + 工作流卡含详情 483 + 间距），下排日志 ~180 → 故取 1260×900、`minsize` 1040×880。**改动行/列结构后必须重算**，否则下排会把上排挤到截断
-- 入口：`main()` → `ui_kit.init_scaling()` → `App(root)` → `root.mainloop()`
+- **上排高度＝内容实测，剩余全给日志**（v1.2.5）：上排**不给 weight**，由 `_sync_top_height()` 用 `winfo_reqheight()` 实测后写回 `rowconfigure(0, minsize=...)`；下排 `weight=1` 吃掉所有剩余高度。**只在内容变化时调用**（切引擎 / 选工作流 / 下拉展开收起），不能在 `<Configure>` 里无条件调，否则会跟 `<Configure>` 形成布局回环
+- **窗口尺寸**（v1.2.5）：1260×960、`minsize` 1040×940，且用 `min(设计值, 屏幕可用区)` 夹住 —— 高分屏下 `S()` 会放大（125% 时 `S(900)=1125`），不夹的话 1080p 屏上窗口底部（运行日志）会被顶到屏幕外。**改动行/列结构后必须重算需求高度**，否则下排会把上排挤到截断
+- 入口：`main()` → `install_crash_log()` → `ui_kit.init_scaling()` → `App(root)` → `watch_tk_errors(root)` → `root.mainloop()`
 - 配置：模块级 `CONFIG` 字典 + 可选同目录 `启动器配置.json` 覆盖
-- 交付：源码直接运行，或用 PyInstaller 打成单文件 exe（会跟随 `import ui_kit` 自动打进去）
+- 交付：源码直接运行，或用 PyInstaller 打成单文件 exe（会跟随 `import ui_kit` / `import 运行时` 自动打进去）
 
 ## 架构说明
 
 ```
 main()
+ ├─ install_crash_log() / watch_tk_errors(root)   异常兜底落盘（GUI 程序没有 stderr）
  └─ App(root)
      ├─ _build_ui()            2×3 网格：上排三栏 + 下排日志（columnspan=2）
      │   ├─ _build_sidebar()   左栏（rowspan=2，通高）：导航（NavItem：三个引擎）+ _build_settings_section()
-     │   ├─ _build_center()    中栏（上排）：滚动舞台 → _build_engine_area()（小标题 + 引擎单卡）
+     │   ├─ _build_center()    中栏（上排）：滚动舞台 → _build_engine_area()（引擎单卡）
      │   ├─ _build_right()     右栏（上排）：服务卡 → 工作流卡
-     │   └─ _build_logpane()   下排：运行日志卡（row=1, column=1, columnspan=2）
+     │   ├─ _build_logpane()   下排：运行日志卡（row=1, column=1, columnspan=2）
+     │   └─ _sync_top_height() 上排高度＝内容实测需求，剩余高度全给下排日志
      ├─ 导航 / 滚动
      │   ├─ _select_nav(key, scroll=True)  切引擎（重绘引擎卡）+ 滚到引擎卡（scroll=False 只切不滚）
      │   ├─ _scroll_to(widget)  按控件 y 换算 yview_moveto
+     │   ├─ _watch_expand(dd)   就地展开的下拉会撑高卡片 → 触发上排高度重新实测
      │   └─ _flash_wf()         引擎卡里的「工作流选择在右栏上方 ↑」→ 描边闪烁提示位置
      ├─ 服务控制
      │   ├─ svc_start()        Popen(comfy_py -u main.py --disable-pinned-memory
-     │   │                          --disable-async-offload --reserve-vram 1)
+     │   │                          --disable-async-offload --reserve-vram 1, creationflags=NO_WINDOW)
      │   ├─ svc_restart()      先终止自有进程 → _restart_worker 轮询等服务退净 → 再起
      │   ├─ _svc_reader()      线程：逐行读 stdout → queue
      │   ├─ _svc_wait_ready()  线程：3s 轮询 /system_stats，最多 5 分钟，就绪自动开网页
      │   ├─ svc_stop()         只终止自己拉起的进程（外部启起的会明确提示）
      │   └─ open_web()         未运行时先 svc_start()，就绪后自动开页
      ├─ 批量任务
-     │   ├─ _run_ps()          拼 PS 命令行 + Popen + 禁用运行按钮 + 起读日志线程
+     │   ├─ _run_ps()          拼 PS 命令行 + Popen（creationflags=NO_WINDOW|NEW_PROCESS_GROUP）
      │   ├─ _task_reader()     线程：回传日志，结束打印 rc / 耗时
      │   ├─ run_flashvsr()     -InputPath / -Mode / -Scale / -Format / -AutoStart
      │   └─ run_seedvr2()      -InputPath / -Profile / -Resolution / -Overwrite
      ├─ 工作流
      │   ├─ _on_wf_select()    选内置工作流 → 详情面板 + 切引擎并同步导航高亮（不滚动）
      │   ├─ _load_wf_json()    读本地 .json → 数节点 → 存 _loaded_api
-     │   └─ _push_wf()         对已加载的 API 图 POST /prompt
+     │   └─ _push_wf()         rt.http_post_json() 对已加载的 API 图 POST /prompt
      ├─ 后台探测
      │   ├─ _probe_loop()      每 5s 一次（root.after，主线程）
-     │   ├─ _probe_once()      线程：读 /system_stats 取版本 + 显存；失败退回 nvidia-smi
+     │   ├─ _probe_once()      线程：rt.http_json(/system_stats) 取版本 + 显存；失败退回 nvidia-smi
      │   └─ _apply_probe()     主线程：刷圆点 / 徽标 / 按钮态
      └─ on_close()             退出前确认中断任务 / 是否一并关服务
+
+运行时.py（与 tkinter 无关）
+ ├─ NO_WINDOW = CREATE_NO_WINDOW      所有子进程都要带，否则 GUI 程序里会闪控制台窗口
+ ├─ ps_quote(s)                       PowerShell 单引号转义
+ ├─ NO_PROXY_OP / http_json()         绕开系统代理取 JSON（Clash 会代理 127.0.0.1 → 502）
+ ├─ http_post_json()                  POST JSON，失败返回错误字符串
+ ├─ install_crash_log(app_dir)        主线程 / 后台线程异常落盘，返回日志路径
+ ├─ watch_tk_errors(root, path)       Tk 回调异常落盘
+ └─ write_crash(path, kind, ...)      追加写「崩溃日志.log」
 ```
 
-**线程模型（v1.2.0 收紧）**：GUI 主线程是**唯一**允许操作控件的地方。子进程读日志、服务就绪轮询、状态探测都在 daemon 线程，结果只做两件事：写 `logq`（日志文本）或往 `uiqueue` 投**回调**；主线程的 `_drain_log` 每 150ms 统一排空。**后台线程里绝不出现 `root.after` / 控件调用**。
+**线程模型（v1.2.0 收紧，v1.2.5 加兜底）**：GUI 主线程是**唯一**允许操作控件的地方。子进程读日志、服务就绪轮询、状态探测都在 daemon 线程，结果只做两件事：写 `logq`（日志文本）或往 `uiqueue` 投**回调**；主线程的 `_drain_log` 每 150ms 统一排空。**后台线程里绝不出现 `root.after` / 控件调用**。`_drain_log` 用 `try/finally` 保证 `after` 一定续上，单个回调抛异常只记一笔、不拖垮整个心跳。
 
-**代理隔离**：`NO_PROXY_OP = build_opener(ProxyHandler({}))` 专用于本机服务探测，与系统 Clash 代理彻底隔离。
+**代理隔离**：`NO_PROXY_OP = build_opener(ProxyHandler({}))` 专用于本机服务探测，与系统 Clash 代理彻底隔离；统一封装为 `运行时.http_json()` / `http_post_json()`，业务代码不再各写一遍 `try/except`。
 
 **依赖注入方式**：所有外部路径集中在 `CONFIG`，`_comfy_env()` 统一为子进程准备环境（PATH 前置 ffmpeg + `PYTHONIOENCODING=utf-8`），服务进程与批量任务共用同一套环境构造。
 
@@ -287,8 +302,67 @@ main()
 - 解决：打包前先 `taskkill /F /IM VideoLauncher.exe` 清残留；打包后核对产物**时间戳与体积**（13286287 → 13286917 才说明真的换了），再对 exe 单独冒烟
 - 预防：把"清进程 → 打包 → 核对时间戳/体积 → exe 冒烟"当成固定四步
 
+### 问题：GUI 程序里 spawn 控制台子进程 → 桌面一直闪黑窗
+
+**TL;DR**：打包成 `console=False` 的 GUI 程序后，**每一个**控制台子进程都要带 `creationflags=CREATE_NO_WINDOW`，否则 Windows 会给它单开一个可见控制台窗口。
+
+- 背景（v1.2.5，用户报「打开了会一直闪窗口然后关闭」）：打包成 exe 后是 windowed 程序（没有控制台）
+- 问题：程序里 `nvidia-smi`（探测线程，**每 5 秒一次**）、`powershell`（跑 .ps1）、ComfyUI 的 `python` 都是控制台程序。windowed 程序 spawn 它们时，Windows 默认新建控制台窗口 → 每次调用在桌面上"闪一下黑窗"，5 秒一次就是"一直闪"
+- 定位方法：先用 `pythonw`（等价 windowed 环境）跑一个最小复现脚本，脚本里 spawn 一个带唯一窗口标题的 powershell；另一个进程用 `EnumWindows` 数 `ConsoleWindowClass` 的可见窗口 —— **不加标记 3/3 都弹窗，加 `CREATE_NO_WINDOW` 后 0/3**
+- 解决：`运行时.NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)`，全部 3 处子进程（`svc_start` / `_run_ps` / `_gpu_by_nvidia_smi`）都带上；`_run_ps` 是 `NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
+- 端到端复核（真实程序跑 16~18 秒，覆盖 3 个探测周期）：**修复前新增 3 个可见控制台窗口，修复后 0 个**（源码与 exe 各测一次）
+- 附带优化：`nvidia-smi` 第一次 `FileNotFoundError` 后就记住不再调用（既有机器没装、又避免反复 spawn 触发杀软启发式）
+- 预防：**GUI 项目里"子进程调用"要当成一条契约来守** —— 行为测试逐块核对每个 `subprocess.Popen/run` 调用点都带了 `creationflags`
+
+### 问题：GUI 程序闪退，却看不到任何报错
+
+**TL;DR**：`console=False` 的 exe 里 `sys.stderr` 是 `None`，traceback 没有去处；必须自己落盘。
+
+- 背景（v1.2.5）：用户报"打开后闪一下就关了"，但没有任何可看的信息 —— 因为 GUI 程序的 stderr 不存在，tkinter 默认的 `report_callback_exception` 也是往 stderr 打
+- 解决：`运行时.install_crash_log(app_dir)` 装 `sys.excepthook` + `threading.excepthook`，`watch_tk_errors(root)` 覆盖 Tk 回调，统一追加写 exe 同目录的「崩溃日志.log」；`_drain_log` 里单个后台回调抛异常也记一笔
+- 验证：故意在 ① Tk 回调 ② 后台线程 里 `raise`，确认都落盘；并对 `after(0) / after(1) / after(10) / after(150)` × 「有无 App」共 8 种组合全测一遍（8/8 都记到）
+- 预防：**windowed 程序的"兜底日志"不是锦上添花** —— 没有它，"闪退"这类问题是零信息的
+
+### 问题：`winfo_reqheight()` 在几何算完前是旧值，自适配会算错且无人纠正
+
+**TL;DR**：Tk 的几何计算是 idle 任务；刚 pack 完就读 `winfo_reqheight()` 会拿到**旧值**。任何"按需求高度自适应"的逻辑，实测前都要先跑一次 `update_idletasks()`。
+
+- 背景（v1.2.5）：新增 `_sync_top_height()` —— 用 `winfo_reqheight()` 实测内容需求，写回上排 `minsize`，剩余高度全给日志
+- 问题：选中工作流后立刻读 `wf_card.winfo_reqheight()` 得到 **263**，跑一次 idle 才是 **500**。用它算出的需求偏小 → 上排没长高 → 工作流卡被压到 268（需要 483），底部「推送到 ComfyUI / 加入队列」掉出可视区。**更麻烦的是：没有任何后续事件会纠正它**，错误会一直留在界面上（`after_idle` 里读也一样可能早于几何计算）
+- 解决：`_sync_top_height()` 内部先 `self.root.update_idletasks()` 再实测；用 `_syncing` 标志挡住 `update_idletasks` 可能触发的重入
+- 预防：把"先 idle 再量"写成硬约束 —— 行为测试断言 `update_idletasks()` 出现在实测语句之前
+
+### 问题：手工累加间距算容器需求会漏算
+
+**TL;DR**：要算"某栏内容需要多高"，别去数各控件的 `reqheight` 加 pady —— 用**真实布局位置**：`子控件.y − 容器.y + 子控件.reqheight()`。
+
+- 背景（v1.2.5）：`_sync_top_height()` 里手写 `服务卡 + S(14) + 工作流卡` 表示右栏需求
+- 问题：漏算了工作流卡自己的底部 `pady=(0, S(14))` → 需求少算 14px → 容器 642 装 656 的内容 → pack 把**最后一个**控件压矮 14px（工作流卡 486 / 需要 500）。而且 `winfo_rooty()` 在控件被压矮时**不会变**，所以"按位置算"天然免疫这种偏差
+- 解决：遍历容器子控件取 `child.winfo_rooty() - col_top + child.winfo_reqheight()` 的最大值；顺手把工作流卡的底部 pady 去掉（它是该栏最后一个控件，行间距由日志行的 pady 提供）
+- 预防：**能实测就别手算**。手算的常量会在下一次改 UI 时静默失准
+
+### 问题：上排给 `weight=1`，日志就只剩 4 行
+
+**TL;DR**：网格里"谁不能长大、谁该长大"要显式分配 —— 把 weight 给错一方，空的是上排、挤的是下排。
+
+- 背景（v1.2.4→v1.2.5，用户反馈「运行日志太矮了，上方空的位置太多了」）
+- 问题：上排 `rowconfigure(0, weight=1)`，剩余高度全被它吃掉：实测**上排中栏空 137px、右栏空 258px**，而下排日志文本区只剩 **84px（约 4 行）**。截图亮度照样 41~45"看着正常"
+- 解决：上排去掉 weight、高度由内容实测决定（`_sync_top_height`）；下排 `weight=1` 吃掉剩余。日志文本区：默认状态 84 → **310px**（约 25 行）；选中工作流（右栏最高状态）**165px**（约 13 行）；最小窗口 + 选中工作流仍有 **145px**
+- 附带：窗口高度 900 → 960（`minsize` 880 → 940），并用 `min(设计值, 屏幕可用区)` 夹住，避免高分屏下窗口比屏幕还高、日志被顶到屏幕外
+- 预防：渲染验证要**直接把"日志文本区高度"打出来**，并断言"内容底 ≤ 可视底"；只测亮度会漏掉这类问题
+
+### 问题：UPX 压缩让单文件 exe 更容易被杀软误杀
+
+**TL;DR**：UPX 压缩过的单文件 exe 更像"自解压壳"，是安全软件误报的主要诱因；收益（体积）远小于风险。
+
+- 背景（v1.2.5）：用户报 exe"打开就闪退"。程序侧查到的是"闪控制台窗口"（已修），但另一条常见成因必须一起排除
+- 结论（多来源一致）：单文件模式本身就是"自解压包"，再叠 UPX 压缩会显著提高启发式扫描命中率，表现就是"进程被拦/被杀 → 窗口一闪就关"；且 UPX 还可能破坏引导流程（解压失败直接静默退出）
+- 解决：spec 里 `upx=True` → **`upx=False`**。代价是体积略增（13,286,917 → 13,293,618 字节，+0.005%），换来"不被误杀 + 引导更稳"
+- 预防：排"闪退"这类问题时，先确认**是否有可看的日志**（见上文崩溃落盘），再排除打包方式；别在无信息的情况下猜代码
+
 ## 文档基线
 
+- 2026-10-10（v1.2.5）：**修"一直闪窗口"（子进程缺 `CREATE_NO_WINDOW`）+ 崩溃落盘 + 上排高度自适配（日志文本区 84→310px）**；抽出 `运行时.py`（主文件逻辑行回到 1000 以内）；新增「GUI 子进程闪黑窗 / 闪退看不到报错 / winfo_reqheight 是旧值 / 手工累加间距会漏算 / 上排 weight 抢空 / UPX 招杀软」六篇问题记录
 - 2026-10-10（v1.2.4）：**运行日志改为横跨中栏 + 右栏的下排**（2×3 网格、左栏跨两行通高、窗口尺寸按内容需求倒推）；新增「跨列下排会挤截断上排 / 运行中的 exe 锁住 dist 让打包假成功」两篇问题记录
 - 2026-10-10（v1.2.3）：**三栏收敛** —— 设置常驻左栏 / 服务卡移到右栏工作流上方 / 删掉中栏重复的引擎切换按钮；新增「常显内容不该做成导航页 / 状态条塞进窄栏 / 第二入口是负债 / 截图裁剪坐标要现算」四篇问题记录
 - 2026-10-10（v1.2.2）：**布局调整** —— 工作流卡移入右栏（日志上方）、右栏改上下两段、窄栏重排、窗口加宽；新增「常显卡片挪进窄栏要重排 / 跳转卡片不再可滚动时」两篇问题记录

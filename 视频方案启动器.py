@@ -23,13 +23,13 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 import webbrowser
 
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import ui_kit
+import 运行时 as rt
 from ui_kit import (
     S, f, mono,
     BG, CARD, CARD2, BORDER, HOVER, TXT, TXT2,
@@ -62,7 +62,8 @@ if os.path.exists(_cfg_path):                       # 允许用同名 JSON 覆�
 FLASHVSR_PS = os.path.join(CONFIG["deploy_root"], "02-FlashVSR", "批量放大.ps1")
 SEEDVR2_PS  = os.path.join(CONFIG["deploy_root"], "03-SeedVR2", "批量放大.ps1")
 
-NO_PROXY_OP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+ps_quote = rt.ps_quote            # 命令串转义（实现在 运行时.py，别名保留以便调用/测试）
+NO_WINDOW = rt.NO_WINDOW          # 子进程"不弹黑窗"标记（GUI 程序里每个 Popen 都要带）
 
 MAX_LOG_LINES = 2000           # 日志区保留的最大行数，超出自动裁剪（防长任务日志无限增长拖慢 UI）
 
@@ -107,9 +108,26 @@ WORKFLOWS = [
 ]
 
 
-def ps_quote(s):
-    """PowerShell 单引号字面量转义。"""
-    return "'" + str(s).replace("'", "''") + "'"
+# 崩溃日志：GUI 程序没有 stderr，出异常时窗口一闪就没了、什么也看不到。
+# 故把未捕获异常统一写到 exe 同目录的「崩溃日志.log」（落盘实现见 运行时.py）。
+_CRASH_LOG_PATH = os.path.join(APP_DIR, rt.CRASH_LOG_NAME)
+
+
+def install_crash_log():
+    """装上「主线程 / 后台线程」异常兜底。必须在建 Tk 之前调用。"""
+    global _CRASH_LOG_PATH
+    _CRASH_LOG_PATH = rt.install_crash_log(APP_DIR)
+    return _CRASH_LOG_PATH
+
+
+def watch_tk_errors(root):
+    """把 Tk 回调里的异常也记下来（须在建好 root 之后调用）。"""
+    rt.watch_tk_errors(root, _CRASH_LOG_PATH)
+
+
+def _write_crash(kind, exc_type, exc, tb):
+    """给主线程心跳兜底：单个后台回调坏掉时记一笔，别让它拖垮整个刷新。"""
+    rt.write_crash(_CRASH_LOG_PATH, kind, exc_type, exc, tb)
 
 
 class App:
@@ -117,11 +135,18 @@ class App:
         self.root = root
         root.title("视频方案启动器")
         root.configure(bg=BG)
-        # 尺寸是按"内容需求高度"倒推的：上排要同时容纳引擎卡(需 ~542)与右栏(服务卡 128 +
-        # 工作流卡含详情 483 + 间距)，下排日志 ~180 —— 取 900 高才有余量，少于 ~880 就会
-        # 把工作流卡的「推送/入队」按钮压到折叠线下（v1.2.4 实测踩过）
-        root.geometry("%dx%d" % (S(1260), S(900)))
-        root.minsize(S(1040), S(880))
+        # 尺寸按"内容需求"倒推：上排要同时容下中栏引擎卡（~497）与右栏（服务卡 128 + 工作流卡
+        # 含详情 ~500），下排运行日志再要 ~276 —— 取 960 高，日志才有十几行可看。
+        # （v1.2.4 是 900 高且给上排 weight=1，日志文本区只剩 84px / 约 4 行。）
+        # 但**绝不能让窗口高过屏幕可用区**：高分屏下 S() 会放大（125% 时 S(900)=1125），
+        # 在 1080p 屏上窗口底部（运行日志）会被顶到屏幕外 —— 看着就是"上面一大片空白、
+        # 日志只剩一点点"，而实际是窗口根本没放下。
+        scr_w, scr_h = root.winfo_screenwidth(), root.winfo_screenheight()
+        avail_w, avail_h = scr_w - S(60), scr_h - S(90)     # 给标题栏 + 任务栏留余量
+        w, h = min(S(1260), avail_w), min(S(960), avail_h)
+        root.geometry("%dx%d+%d+%d" % (w, h,
+                                       max(0, (scr_w - w) // 2), max(0, (scr_h - h) // 2 - S(20))))
+        root.minsize(min(S(1040), avail_w), min(S(940), avail_h))
 
         self.logq = queue.Queue()
         self.uiqueue = queue.Queue()    # 后台线程 → 主线程的回调队列（tkinter 非线程安全，禁止跨线程碰控件）
@@ -136,6 +161,11 @@ class App:
         self._probe_state = {"alive": False, "starting": False, "own": False,
                              "version": "?", "gpu": ""}
         self._run_btn = None            # 当前引擎卡上的「运行」按钮
+        self._top_need = 0              # 上排内容实测高度（_sync_top_height 写回 rowconfigure）
+        self._ui_ready = False          # UI 搭完前不触发上排高度自适配
+        self._sync_pending = False      # after_idle 合并标记
+        self._syncing = False           # 上排高度实测中（防 update_idletasks 重入）
+        self._nvsmi_ok = True           # nvidia-smi 是否可用（不可用就不再反复起进程）
 
         self._build_ui()
         # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
@@ -147,14 +177,75 @@ class App:
     def _build_ui(self):
         app = tk.Frame(self.root, bg=BG)
         app.pack(fill="both", expand=True, padx=S(14), pady=S(14))
-        app.columnconfigure(1, weight=1)
-        app.rowconfigure(0, weight=1)              # 上排：左栏 / 中栏 / 右栏
-        app.rowconfigure(1, minsize=S(180))        # 下排：运行日志横跨中栏 + 右栏
+        self.app = app
+        app.columnconfigure(1, weight=1)               # 中栏弹性
+        # 上排**不给 weight**：它只该占到"内容实际需求"那么高（minsize 由 _sync_top_height 实测写回）。
+        # v1.2.4 给上排 weight=1，结果剩余高度被它全吃掉：实测上排中栏空 137px、右栏空 258px，
+        # 而下排运行日志文本区只剩 84px（约 4 行）。下排改为 weight=1，吃掉上排用不完的高度。
+        app.rowconfigure(0, minsize=S(520))
+        app.rowconfigure(1, weight=1, minsize=S(200))
 
         self._build_sidebar(app)      # 左栏（跨两行，保持通高）
         self._build_center(app)       # 中栏：引擎参数
         self._build_right(app)        # 右栏：服务卡 + 工作流卡
         self._build_logpane(app)      # 下排：运行日志（columnspan=2）
+
+        self._ui_ready = True
+        self._sync_top_height()
+
+    # ---- 上排高度自适配（内容实测）----
+    def _sync_top_height(self):
+        """把上排高度锁到「内容实际需求」，剩余高度全部让给下排运行日志。
+
+        需求 = max(中栏引擎卡高度, 右栏「服务卡 + 工作流卡」高度)。
+
+        **实测前必须先 update_idletasks()**：Tk 的几何计算是 idle 任务，刚 pack 完
+        新内容时 winfo_reqheight() 还是旧值（实测：选中工作流后立刻读是 263，
+        跑一次 idle 才是 500）—— 用旧值就会把卡片截断，而且没有任何后续事件会纠正它。
+
+        **只在内容变化时调用**（切引擎 / 选工作流 / 下拉展开收起）；
+        不能在 <Configure> 里无条件调用，否则"改 minsize → 触发 Configure → 再改 minsize"
+        会死循环。_syncing 再挡一层重入（update_idletasks 可能又触发 Configure）。
+        """
+        if not getattr(self, "_ui_ready", False) or self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.root.update_idletasks()
+            # 右栏需求：取"最低那个子控件的底边"。用真实布局位置 + 自身需求高来算，
+            # 这样对 pack 的 pady / 卡片圆角内边距都免疫 —— 手工累加间距实测漏算 14px，
+            # 结果工作流卡被压矮、底部按钮掉出可视区。
+            col_top = self.right_col.winfo_rooty()
+            right = 0
+            for child in self.right_col.winfo_children():
+                right = max(right, child.winfo_rooty() - col_top + child.winfo_reqheight())
+            need = max(self.stage.winfo_reqheight(), right, S(360))
+            if abs(need - self._top_need) > S(2):
+                self._top_need = need
+                self.app.rowconfigure(0, minsize=need)
+        finally:
+            self._syncing = False
+
+    def _schedule_top_sync(self):
+        """合并多次请求：等这一轮布局稳定后（after_idle）再实测一次。"""
+        if not getattr(self, "_ui_ready", False) or self._sync_pending:
+            return
+        self._sync_pending = True
+
+        def run():
+            self._sync_pending = False
+            self._sync_top_height()
+
+        self.root.after_idle(run)
+
+    def _watch_expand(self, dd):
+        """下拉是"就地展开"（选项面板 pack 在卡片内部），展开会把卡片撑高。
+
+        不跟着调上排高度的话，展开的选项列表会把卡片下半部分挤出可视区。
+        <Configure> 里只做「置位 + after_idle 实测」，且实测前后有 2px 阈值去抖，
+        所以"改 minsize → 触发 Configure → 再改 minsize"不会形成死循环。
+        """
+        dd.bind("<Configure>", lambda e: self._schedule_top_sync())
 
     # ---- 左：导航 ----
     def _build_sidebar(self, parent):
@@ -214,14 +305,12 @@ class App:
 
         self._build_engine_area(self.stage)
 
-    def _section(self, parent, text):
-        tk.Label(parent, text=text, bg=BG, fg=TXT2, font=f(9), anchor="w").pack(
-            fill="x", pady=(0, S(8)), padx=S(2))
-
     # ---- 工作流卡（右栏顶部，常显不滚动）----
     def _build_workflow_card(self, parent):
         card = RoundedFrame(parent, outer=BG, pad=(6, 6))
-        card.pack(fill="x", pady=(0, S(14)))
+        # 它是右栏最后一个控件：底部不留间距，行与行之间的留白由日志行的 pady 提供
+        # （留了会让右栏需求多算 14px，把卡片自己挤矮）
+        card.pack(fill="x")
         self.wf_card = card
         b = card.body
 
@@ -239,6 +328,7 @@ class App:
         self.wf_dd = Dropdown(b, [w["name"] for w in WORKFLOWS], command=self._on_wf_select,
                               outer=CARD, placeholder="— 请选择一套内置工作流 —", font=f(10))
         self.wf_dd.pack(fill="x", pady=(S(5), 0))
+        self._watch_expand(self.wf_dd)
         self.wf_nodes = tk.Label(b, text="未选择 · 共 %d 套内置" % len(WORKFLOWS),
                                  bg=CARD, fg=TXT2, font=f(8), anchor="w")
         self.wf_nodes.pack(fill="x", pady=(S(6), 0))
@@ -262,6 +352,7 @@ class App:
                                  "这里会显示它的节点与输入输出。",
                      bg="#1c202a", fg=TXT2, font=f(9), anchor="w", justify="left",
                      wraplength=S(250)).pack(fill="x", padx=S(12), pady=S(12))
+            self._schedule_top_sync()
             return
 
         pad = tk.Frame(inner, bg="#1c202a")
@@ -324,15 +415,16 @@ class App:
                 fill="transparent", fg=TXT, border=BORDER, outer="#1c202a",
                 font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
                                                      padx=(S(8), 0))
+        self._schedule_top_sync()
 
     # ---- 引擎区（单卡，切换交给左导航）----
     def _build_engine_area(self, parent):
         # v1.2.3：去掉中栏那排 FlashVSR / SeedVR2 / MiniMax H3 切换按钮 ——
         # 左导航已经承担"切引擎"，两处入口重复且占掉首屏高度
-        self._section(parent, "引擎 · 由左侧导航切换")
-
+        # v1.2.5：连「引擎 · 由左侧导航切换」这行小标题也去掉 —— 引擎卡自己有标题，
+        # 这行只在白占 31px 高度，且"由左侧导航切换"是给开发者看的说明，不是用户需要的信息
         self.engine_card = RoundedFrame(parent, outer=BG, pad=(6, 6))
-        self.engine_card.pack(fill="x", pady=(0, S(16)))
+        self.engine_card.pack(fill="x", pady=(0, S(2)))
 
     def _render_engine(self, key):
         meta = ENG[key]
@@ -362,6 +454,7 @@ class App:
                                     font=f(10), height=S(34))
             self.fv_mode.pack(fill="x", pady=(0, S(12)))
             self.fv_mode.set("通用 · 动画")
+            self._watch_expand(self.fv_mode)
             self._field_label(b, "放大倍数")
             self.fv_scale = ChipRow(b, ["2x", "3x", "4x"], outer=CARD, default="2x",
                                     on_fill=meta["color"])
@@ -372,6 +465,7 @@ class App:
                                    outer=CARD, font=f(10), height=S(34))
             self.fv_fmt.pack(fill="x", pady=(0, S(12)))
             self.fv_fmt.set("video/h264-mp4")
+            self._watch_expand(self.fv_fmt)
             self.fv_auto = CheckBox(b, "服务没跑就自动拉起", on=True,
                                     outer=CARD, color=meta["color"])
             self.fv_auto.pack(fill="x", pady=(S(6), S(12)))
@@ -384,6 +478,7 @@ class App:
                                     font=f(10), height=S(34))
             self.sv_prof.pack(fill="x", pady=(0, S(12)))
             self.sv_prof.set("平衡 · 16g")
+            self._watch_expand(self.sv_prof)
             self._field_label(b, "目标短边")
             self.sv_res = ChipRow(b, ["720", "1080"], outer=CARD, default="1080",
                                   on_fill=meta["color"])
@@ -403,6 +498,7 @@ class App:
                      wraplength=S(600)).pack(fill="x", pady=(0, S(12)))
             self._run_btn = self._run_button(b, "打开 ComfyUI 网页", self.open_web, meta["color"])
             self._goto_wf(b)
+        self._schedule_top_sync()      # 引擎卡换了 → 上排高度需求跟着变
 
     def _field_label(self, parent, text):
         tk.Label(parent, text=text, bg=parent["bg"], fg=TXT2, font=f(8), anchor="w").pack(
@@ -653,17 +749,13 @@ class App:
             self.log("[工作流] ComfyUI 未运行，先启动服务再%s" % ("入队" if to_queue else "推送"),
                      "warn")
             return
-        try:
-            payload = json.dumps({"prompt": self._loaded_api,
-                                  "client_id": "video-launcher"}).encode("utf-8")
-            req = urllib.request.Request(CONFIG["comfy_url"] + "/prompt", data=payload,
-                                         headers={"Content-Type": "application/json"})
-            with NO_PROXY_OP.open(req, timeout=10) as r:
-                r.read()
+        err = rt.http_post_json(CONFIG["comfy_url"] + "/prompt",
+                                {"prompt": self._loaded_api, "client_id": "video-launcher"})
+        if err is None:
             self.log("[工作流] 已%s「%s」→ ComfyUI" % ("入队" if to_queue else "推送", name),
                      "lw" if to_queue else "ok")
-        except Exception as e:
-            self.log("[工作流] 推送失败：%r" % e, "err")
+        else:
+            self.log("[工作流] 推送失败：%s" % err, "err")
 
     # ================================================================ 小工具
     def _pick(self, var, is_file=True):
@@ -705,33 +797,45 @@ class App:
         return None
 
     def _drain_log(self):
+        """主线程心跳：排空日志队列 + 后台回调队列，然后重排程自己。
+
+        外层必须 try/finally 保证重排程一定发生 —— 否则任何一个回调抛异常，
+        `root.after` 就不再续上，日志与状态刷新会**永久停摆**（v1.1.2 的
+        「日志刷新停摆」就是这一类静默故障，当时是靠运行期冒烟才抓到的）。
+        """
+        try:
+            dirty = self._drain_lines()
+            while True:
+                try:
+                    self.uiqueue.get_nowait()()
+                except queue.Empty:
+                    break
+                except Exception:                  # 单个回调坏掉不该拖垮整个心跳
+                    _write_crash("后台回调", *sys.exc_info())
+            if dirty:
+                self.logtxt.see("end")
+        finally:
+            if not self._closing:
+                self.root.after(150, self._drain_log)
+
+    def _drain_lines(self):
         dirty = False
-        try:
-            while True:
+        while True:
+            try:
                 line, tag = self.logq.get_nowait()
-                self.logtxt.configure(state="normal")
-                self.logtxt.insert("end", line + "\n", tag or self._tag_for(line) or ())
-                # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
-                # 注意：Text.count() 返回 tuple，不能 int()；故用自维护计数器
-                self._log_lines += 1
-                if self._log_lines > MAX_LOG_LINES:
-                    self.logtxt.delete("1.0", "2.0")
-                    self._log_lines -= 1
-                self.logtxt.configure(state="disabled")
-                dirty = True
-                self._maybe_progress(line)
-        except queue.Empty:
-            pass
-        # 排空「后台线程 → 主线程」回调（tkinter 只能在主线程操作控件）
-        try:
-            while True:
-                self.uiqueue.get_nowait()()
-        except queue.Empty:
-            pass
-        if dirty:
-            self.logtxt.see("end")
-        if not self._closing:
-            self.root.after(150, self._drain_log)
+            except queue.Empty:
+                return dirty
+            self.logtxt.configure(state="normal")
+            self.logtxt.insert("end", line + "\n", tag or self._tag_for(line) or ())
+            # 超出上限则裁剪最旧的行，避免 SeedVR2 等 20+ 分钟任务日志无限堆积拖慢 UI
+            # 注意：Text.count() 返回 tuple，不能 int()；故用自维护计数器
+            self._log_lines += 1
+            if self._log_lines > MAX_LOG_LINES:
+                self.logtxt.delete("1.0", "2.0")
+                self._log_lines -= 1
+            self.logtxt.configure(state="disabled")
+            dirty = True
+            self._maybe_progress(line)
 
     def _maybe_progress(self, line):
         m = re.search(r"(\d+)\s*/\s*(\d+)", line)
@@ -763,12 +867,8 @@ class App:
         return env
 
     def comfy_alive(self):
-        try:
-            with NO_PROXY_OP.open(CONFIG["comfy_url"] + "/system_stats", timeout=3) as r:
-                json.loads(r.read().decode("utf-8"))
-            return True
-        except Exception:
-            return False
+        """本机 ComfyUI 是否在跑（绕开系统代理，见 运行时.http_json）。"""
+        return rt.http_json(CONFIG["comfy_url"] + "/system_stats") is not None
 
     def _primary_service(self):
         if self._probe_state["alive"]:
@@ -798,7 +898,8 @@ class App:
                  "--disable-pinned-memory", "--disable-async-offload", "--reserve-vram", "1"],
                 cwd=CONFIG["comfy_dir"], env=self._comfy_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1)
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                creationflags=NO_WINDOW)
         except Exception as e:
             self._svc_starting = False
             self.btn_primary.set_state("normal")
@@ -900,7 +1001,7 @@ class App:
                 cmd, cwd=CONFIG["deploy_root"], env=self._comfy_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                creationflags=NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
         except Exception as e:
             messagebox.showerror("启动失败", repr(e))
             return
@@ -974,17 +1075,16 @@ class App:
         st = {"alive": False, "version": "?", "gpu": "",
               "own": self.svc_proc is not None and self.svc_proc.poll() is None,
               "starting": self._svc_starting}
-        try:
-            with NO_PROXY_OP.open(CONFIG["comfy_url"] + "/system_stats", timeout=3) as r:
-                d = json.loads(r.read().decode("utf-8"))
+        d = rt.http_json(CONFIG["comfy_url"] + "/system_stats")
+        if d is None:
+            st["gpu"] = self._gpu_by_nvidia_smi()
+        else:
             st["alive"] = True
             dev = (d.get("devices") or [{}])[0]
             used = (dev.get("vram_total", 0) - dev.get("vram_free", 0)) / 2 ** 30
             tot = dev.get("vram_total", 0) / 2 ** 30
             st["version"] = d.get("system", {}).get("comfyui_version", "?")
             st["gpu"] = "显存 %.1f/%.1fG" % (used, tot)
-        except Exception:
-            st["gpu"] = self._gpu_by_nvidia_smi()
         self._probe_state = st
         self.uiqueue.put(self._apply_probe)      # 交主线程刷新，别在此线程碰控件
 
@@ -1018,13 +1118,24 @@ class App:
         self.btn_stop.set_state("normal" if own else "disabled")
 
     def _gpu_by_nvidia_smi(self):
+        """ComfyUI 没起来时退而求其次，用 nvidia-smi 读显存。
+
+        本机没有 nvidia-smi 就记住，别每 5 秒白起一个进程 —— 反复 spawn 子进程
+        既浪费，也是杀软启发式扫描喜欢盯的行为。
+        """
+        if not self._nvsmi_ok:
+            return ""
         try:
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.used,memory.total",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=8).stdout
+                capture_output=True, text=True, timeout=8,
+                creationflags=NO_WINDOW).stdout
             u, t = out.strip().splitlines()[0].split(",")
             return "显存 %.1f/%.1fG" % (int(u) / 1024, int(t) / 1024)
+        except FileNotFoundError:
+            self._nvsmi_ok = False
+            return ""
         except Exception:
             return ""
 
@@ -1050,8 +1161,10 @@ class App:
 
 
 def main():
+    install_crash_log()
     ui_kit.enable_dpi_awareness()
     root = tk.Tk()
+    watch_tk_errors(root)
     ui_kit.init_scaling(root)
 
     app = App(root)

@@ -26,7 +26,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX 压缩会把 PyInstaller 单文件 exe 改得"像自解压壳"，是杀软误报的主要诱因之一
+    # （UPX 压缩体被安全软件判为可疑 → 进程被拦/被杀，表现就是"打开闪一下就关"）。
+    # 关掉它：体积略增，但换来"不被误杀"和更稳的引导流程。
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
