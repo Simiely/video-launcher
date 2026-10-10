@@ -41,7 +41,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.12"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.13"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -855,17 +855,6 @@ class App:
         threading.Thread(target=self._svc_reader, daemon=True).start()
         threading.Thread(target=self._svc_wait_ready, daemon=True).start()
 
-    def svc_restart(self):
-        if self._svc_starting:
-            self.log("[服务] 正在启动中，稍候再重启")
-            return
-        own = self.svc_proc is not None and self.svc_proc.poll() is None
-        if not own:
-            self.log("[服务] 当前服务不是本程序拉起的，无法重启；请手动关闭后再启动", "warn")
-            return
-        self.log("[服务] 重启中：先停后起…", "hi")
-        threading.Thread(target=self._restart_worker, daemon=True).start()
-
     def _restart_worker(self):
         p = self.svc_proc
         try:
@@ -910,15 +899,50 @@ class App:
         self.log("[服务] ⚠️ 5 分钟内未就绪，请看日志排查", "warn")
 
     def svc_stop(self):
-        if self.svc_proc is None:
-            self.log("[服务] ComfyUI 不是本程序拉起的，请在网页/原终端里关闭", "warn")
-            return
-        if self.svc_proc.poll() is None:
+        own = self.svc_proc is not None and self.svc_proc.poll() is None
+        if own:
             self.log("[服务] 正在停止 ComfyUI…", "hi")
             try:
                 self.svc_proc.terminate()
             except Exception as e:
                 self.log("[服务] 停止失败：%r" % e, "err")
+            return
+        if not self.comfy_alive():
+            self.log("[服务] ComfyUI 没在运行")
+            return
+        # 不是自己拉起的也照样能停（v1.2.13）：按命令行找到它的进程再结束。
+        # PowerShell 查询要 1~3 秒，进后台线程，别把界面卡住。
+        self.log("[服务] 服务不是本程序拉起的，正在定位它的进程…", "hi")
+        threading.Thread(target=lambda: rt.stop_external(CONFIG, self.log),
+                         daemon=True).start()
+
+    def svc_restart(self):
+        if self._svc_starting:
+            self.log("[服务] 正在启动中，稍候再重启")
+            return
+        own = self.svc_proc is not None and self.svc_proc.poll() is None
+        if own:
+            self.log("[服务] 重启中：先停后起…", "hi")
+            threading.Thread(target=self._restart_worker, daemon=True).start()
+            return
+        if not self.comfy_alive():
+            self.log("[服务] ComfyUI 没在运行，直接启动…", "dim")
+            self.svc_start()
+            return
+        self.log("[服务] 服务不是本程序拉起的，先停外部进程再启动…", "hi")
+        threading.Thread(target=self._restart_ext_worker, daemon=True).start()
+
+    def _restart_ext_worker(self):
+        """外部拉起的服务也能重启（v1.2.13）：结束它的进程，等退出后走正常启动。"""
+        rt.stop_external(CONFIG, self.log)
+        for _ in range(40):                       # 最多等 20 秒，等外部服务真退出
+            if self._closing:
+                return
+            if not self.comfy_alive():
+                break
+            time.sleep(0.5)
+        if not self._closing:
+            self.uiqueue.put(self.svc_start)
 
     def svc_stop_queue(self):
         """停掉 ComfyUI 里正在跑的 + 排队中的任务。
@@ -927,8 +951,8 @@ class App:
         /queue{"clear":true} 清掉还没轮到的。先读一次 /queue 是为了把"停掉几个"
         说清楚 —— 队列本来就空时直接报"已停止"会让人以为程序在自说自话。
 
-        与「停止服务」的区别：这个是**外部启动的 ComfyUI 也能用**的，只走 HTTP；
-        「停止服务」只能停本程序自己拉起的那个进程。
+        与「停止服务」的区别：这个只走 HTTP，不碰进程；「停止服务」是结束
+        ComfyUI 进程本身（自己拉起的走句柄、外部的按命令行找，v1.2.13 起都能停）。
         """
         if not self.comfy_alive():
             self.log("[队列] ComfyUI 没在运行，没有可停的任务", "warn")
@@ -1087,8 +1111,9 @@ class App:
         else:
             self.btn_primary.set_text("启动服务")
             self.btn_primary.set_state("normal")
-        # 停止：仅当自己拉起的进程在跑
-        self.btn_stop.set_state("normal" if own else "disabled")
+        # 停止：自己拉起的直接停；外部的走"按命令行找进程"也能停（v1.2.13）。
+        # 服务活着但进程没匹配上时，点了会得到一句实话，而不是按钮灰着没法按。
+        self.btn_stop.set_state("normal" if (own or alive) else "disabled")
         # 停止队列：只要服务活着就能清（外部启动的 ComfyUI 一样能中断/清队列，
         # 不像"停止服务"那样必须是自己拉起的进程）
         self.btn_queue.set_state("normal" if self._probe_state["alive"] else "disabled")

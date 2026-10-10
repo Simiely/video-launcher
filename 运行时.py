@@ -457,6 +457,126 @@ def gpu_by_nvidia_smi():
         return "", True
 
 
+def find_comfy_pids(comfy_dir, comfy_py=""):
+    """按命令行找正在跑的 ComfyUI 进程 —— 外部启动的也算（v1.2.13）。
+
+    v1.2.13 前「停止服务 / 重启」只认本程序自己拉起的进程（手里有 Popen 句柄才敢
+    动手），外部启动的一律拒绝。但 exe 更新重开是常态：旧服务还在跑、新 exe 天生
+    不认它，用户就卡在"请手动关闭"上。这里用 PowerShell 问一遍 Win32_Process：
+    python 进程的命令行或可执行文件路径里带着配置的 comfy 目录 / comfy Python
+    的，就是要找的。wmic 在新 Windows 上已弃用，不押它。
+
+    返回 [(pid, 命令行)]；**查询失败返回 None**（区别于"没找到"——调用方话术不同）。
+    一次查询约 1~3 秒：只放在用户点击动作里、后台线程调用，别挂到周期探测上。
+    """
+    keys = []
+    for p in (comfy_dir, comfy_py):
+        p = os.path.normpath(str(p or "")).lower().replace("'", "''")
+        if p and p not in keys:
+            keys.append(p)
+    if not keys:
+        return []
+    cond = " -or ".join("$c.Contains('%s') -or ($e -and $e.Contains('%s'))" % (k, k)
+                        for k in keys)
+    # 注意别用 % 格式化拼整段脚本：'Name like '%python%'' 里的 %p / %' 会被当成格式符
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name like '@PY@'\" | "
+          "ForEach-Object { if ($_.CommandLine) { "
+          "$c = $_.CommandLine.ToLower(); $e = $_.ExecutablePath; "
+          "if ($e) { $e = $e.ToLower() } "
+          "if (__COND__) { \"$($_.ProcessId)`t$($_.CommandLine)\" } } }"
+          ).replace("@PY@", "%python%").replace("__COND__", cond)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=30, creationflags=NO_WINDOW)
+    except Exception:          # 超时 / powershell 不可用：让调用方走"查询失败"话术
+        return None
+    out = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        pid, _, cmd = line.partition("\t")
+        if pid.isdigit() and cmd:
+            out.append((int(pid), cmd.strip()))
+    return out
+
+
+def find_main_py_pids():
+    """候选进程：命令行里有 main.py 的 python 进程（v1.2.13）。
+
+    ComfyUI 用"在某目录里 python -u main.py"方式启动时，命令行里看不到那个目录
+    （工作目录不进 Win32_Process.CommandLine），find_comfy_pids 会漏掉它 —— 实测
+    本机就有一个 uv python 起的 ComfyUI 落在这。这里把它列为候选交给上层决定，
+    **只列不杀**：别的程序也可能叫 main.py，命令行又看不出工作目录，自动杀会误伤。
+    查询失败返回 None。
+    """
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name like '@PY@'\" | "
+          "ForEach-Object { if ($_.CommandLine -and "
+          "$_.CommandLine.ToLower().Contains('main.py')) { "
+          "\"$($_.ProcessId)`t$($_.CommandLine)\" } }").replace("@PY@", "%python%")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=30, creationflags=NO_WINDOW)
+    except Exception:
+        return None
+    out = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        pid, _, cmd = line.partition("\t")
+        if pid.isdigit() and cmd:
+            out.append((int(pid), cmd.strip()))
+    return out
+
+
+def kill_pid(pid):
+    """强杀一个进程树。外部服务手里没有句柄、也没法优雅关，直接 taskkill /T /F。"""
+    r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=NO_WINDOW)
+    return r.returncode == 0
+
+
+def short_cmd(cmd, limit=70):
+    """日志里展示命令行用的截断（全路径太长会把日志行顶乱）。"""
+    cmd = str(cmd or "").strip()
+    return cmd if len(cmd) <= limit else cmd[:limit - 1] + "…"
+
+
+def stop_external(cfg, log):
+    """结束外部拉起的 ComfyUI 进程。log(文本, 级别) 由调用方给（运行时不碰界面）。
+
+    返回 True＝已结束进程；False＝没找到（服务可能在响应但进程没带配置目录，
+    不算失败）；None＝查询失败。三种情况话术都写在 log 里，调用方不用再猜。
+    """
+    pids = find_comfy_pids(cfg.get("comfy_dir"), cfg.get("comfy_py"))
+    if pids is None:
+        log("[服务] 进程查询失败，请手动关闭 ComfyUI", "err")
+        return None
+    if not pids:
+        cand = find_main_py_pids() or []
+        if cand:
+            log("[服务] 服务在响应，但它的命令行里没有配置的目录；"
+                "找到 %d 个带 main.py 的疑似进程：" % len(cand), "warn")
+            for pid, cmd in cand:
+                log("[服务] 疑似进程 %d：%s" % (pid, short_cmd(cmd)), "dim")
+            log("[服务] 确认是 ComfyUI 的话请手动结束，"
+                "或把它的所在目录填进设置里的「ComfyUI 目录」再试", "warn")
+            return False
+        log("[服务] 服务在响应，但没找到对应的进程；请在原终端或网页里关闭", "warn")
+        return False
+    done = 0
+    for pid, cmd in pids:
+        log("[服务] 结束进程 %d：%s" % (pid, short_cmd(cmd)), "dim")
+        done += 1 if kill_pid(pid) else 0
+    if done == len(pids):
+        log("[服务] 已结束 %d 个 ComfyUI 进程" % done, "ok")
+    else:
+        log("[服务] 结束了 %d/%d 个进程，残余的请手动处理" % (done, len(pids)), "warn")
+    return True
+
+
 def check_input(path, name="输入"):
     """批量任务的输入校验：返回 (路径, 错误文案)。错误文案为空串表示可用。"""
     p = str(path or "").strip().strip('"')
