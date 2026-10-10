@@ -1,12 +1,12 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-10（commit `b5624b5`）**设置项可打开 + 可手动修改**（写回「启动器配置.json」并当场复检；设置列表数据驱动、与启动日志同源，v1.2.10）+ 启动自检（逐项真实检测、判到能力级；日志与左栏共用一份结果，v1.2.9）+ 日志落盘（旁路、配置驱动；文件行 == 界面行，v1.2.8）+ 三文件裸 `pass` 归零 + ComfyUI 日志保真（v1.2.6）+ P1 收尾（v1.2.7）
+> 📌 **文档基线**：2026-10-10 **v1.2.11**（commit hash 见 docs 提交）**内置方案绑定真实 API 图可直推 + 加载过的图进下拉 + 「停止队列任务」**（`pick_api` 按音轨挑图、`apply_input` 换素材、`apply_patch` 覆盖参数；停止队列只要求服务活着，外部启动的也能用；版本号常量 `APP_VER` 进窗口标题）+ 设置项可打开 + 可手动修改（v1.2.10）+ 启动自检（v1.2.9）+ 日志落盘（v1.2.8）+ ComfyUI 日志保真（v1.2.6）+ P1 收尾（v1.2.7）
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ## 技术栈
 
 - Python **3.12+**（本机 3.13.15），**纯标准库**：`tkinter`（**自绘控件，不用 ttk**）/ `subprocess` / `threading` + `queue` / `urllib.request` / `json` / `webbrowser`
-- 三文件结构（v1.2.5 起）：`视频方案启动器.py`（配置 + 业务 + 界面装配） + `ui_kit.py`（深色自绘控件库 + 设计令牌，含 `SettingsList` 设置项列表 / `ask_text` 模态输入弹窗） + `运行时.py`（与界面无关的运行时支撑：`NO_WINDOW` / 绕代理 HTTP / 崩溃落盘 / **日志行解析与清洗** / **日志落盘** / **启动自检** / **设置项读写与打开** / 内置工作流清单）
+- **三文件结构（v1.2.5 起）**：`视频方案启动器.py`（配置 + 业务 + 界面装配；**版本号常量 `APP_VER`**，窗口标题带它） + `ui_kit.py`（深色自绘控件库 + 设计令牌，含 `SettingsList` 设置项列表 / `ask_text` 模态输入弹窗 / `WorkflowDetail` 工作流详情） + `运行时.py`（与界面无关的运行时支撑：`NO_WINDOW` / 绕代理 HTTP / 崩溃落盘 / **日志行解析与清洗** / **日志落盘** / **启动自检** / **设置项读写与打开** / **工作流 API 图取用**：`pick_api` / `load_api` / `apply_input` / `apply_patch` / 内置工作流清单）
 - 打包：PyInstaller（`VideoLauncher.spec`，单文件、`console=False`、**`upx=False`**；会自动跟随 `import ui_kit` / `import 运行时`）
 - 宿主链路：PowerShell 5.1 → `video-upscale-deploy` 下的 `.ps1` → ComfyUI（`127.0.0.1:8188`）
 
@@ -34,6 +34,7 @@
 - **跟着配置走的派生路径要用函数，别用模块级常量**（v1.2.10）：`FLASHVSR_PS = os.path.join(CONFIG["deploy_root"], ...)` 在 `import` 那一刻就定死了 —— 用户在设置里改了 `deploy_root`，日志当场转绿、面板也显示新值，**但点运行拿到的还是旧路径**。这是"改了没生效，界面上却一切正常"的一类，比"改不了"更难发现。现在走 `engine_ps(engine)` 现算。做"可修改的配置"时，grep 一遍该键的所有使用点，逐个判断"运行时读取还是启动时固化"。
 - **验证脚本会污染 `APP_DIR` 下的配置文件**（v1.2.10）：`APP_DIR` 取自 `sys.argv[0]`，所以在 `_audit/` 跑验证脚本时程序就去 `_audit/` 找「启动器配置.json」—— **上一次运行残留的值会变成下一次的初始状态**，让"改成 X"这类断言凭空通过。症状很好认：`on_save` 没被调用、日志区为空，但"值已更新"却是 PASS（`_edit` 判定 `new == it["value"]` = 没改动，直接返回，行为本身正确）。跑前把已有配置挪开、让 `CONFIG` 从默认值起跑，收尾放回；目标值按当前值动态算。**断言之间互相矛盾时，别挑好看的那条信。**
 - **截图留证要抓窗口自身（`PrintWindow`），不是"屏幕上那块矩形"**（v1.2.10）：`ImageGrab.grab(bbox=窗口矩形)` 在窗口被遮挡时会抓到**盖住它的那个** —— 实测抓出一张视频播放器画面，尺寸还"正常"，看着很像没问题的证据图。v1.2.8 已给主窗口定过这条，v1.2.10 在**模态弹窗**上又踩一次：凡"给某个具体窗口留证"都用 `PrintWindow`，退回屏幕抓取时必须在输出里标注。**"尺寸对"不等于"内容对"。**
+- **自绘按钮要断言"实际宽 ≥ 需求宽"，不是只测"没溢出容器"**（v1.2.11）：文字超宽时被**按钮自己**裁掉，按钮框还好好地留在容器里 —— "末按钮右缘 ≤ 卡片右缘"这类断言恒 PASS，测不出截断。加按钮前先算"平分宽 vs `font.measure(文字)+padding`"，不够就换行排布（服务卡四个按钮就是两行）；渲染验证补"需求宽 ≤ 实际宽 + 同排按钮 y 相等"两条断言。
 - **量尺寸前先跑 idle**（v1.2.5）：Tk 几何计算是 idle 任务，刚 `pack` 完读 `winfo_reqheight()` 拿到的是**旧值**（实测 263 vs 500）。任何"按需求高度自适应"的实测前必须 `update_idletasks()`，并加标志防重入。
 - **算容器需求别手数 pady**（v1.2.5）：用 `子控件.winfo_rooty() − 容器.winfo_rooty() + 子控件.winfo_reqheight()` 取最大值；手写 `A + S(14) + B` 实测漏算过 14px。
 - **ffmpeg 不靠注册表**：`_comfy_env()` 把 `ffmpeg_dir` 显式前置到子进程 `PATH`；本机实测出现过「父进程改了 PATH 但传不到子进程」。
@@ -49,7 +50,7 @@
 - **三栏分工（v1.2.5 起为 2×3 网格）**：上排 左＝导航 + **设置常驻**（`_build_settings_section` → `ui_kit.SettingsList`；每项两行，标签行挂「打开」「修改」，值行本身也可点改）/ 中＝滚动舞台（只放引擎卡，无小标题、无切换按钮）/ 右＝**服务卡 → 工作流卡**；下排＝**运行日志横跨中栏 + 右栏**（`row=1, column=1, columnspan=2`），左栏 `rowspan=2` 通高。**卡片换容器＝换可用宽度**，搬动时按新栏宽重排（横排→纵排 / 网格，重设 `wraplength`）。`_scroll_to()` 只对还在 `self.stage` 里的控件有效。
 - **上排高度＝内容实测，剩余全给日志**（v1.2.5）：上排**不给 weight**，`_sync_top_height()` 实测后写回 `rowconfigure(0, minsize=...)`；下排 `weight=1` 吃剩余。**只在内容变化时调用**（切引擎 / 选工作流 / 下拉展开收起）—— 在 `<Configure>` 里无条件调会和 `<Configure>` 形成布局回环。就地展开的 `Dropdown` 会撑高卡片，故新增下拉要挂 `_watch_expand()`。
 - **窗口尺寸**（v1.2.5）：1260×960 / `minsize` 1040×940，且 `min(设计值, 屏幕可用区)` 夹住 —— 高分屏下 `S()` 会放大（125% 时 `S(900)=1125`），不夹的话 1080p 屏上窗口底部（日志）会被顶到屏幕外。**改布局后必须重算每行需求高度**，否则下排会把上排挤到截断（按钮落折叠线下）。渲染验证要断言"控件底 ≤ 可视底"与"实际高 ≥ 请求高"。
-- **模块拆分按阈值**：单文件逻辑行超过 pylint 默认上限（**1000**）才拆。`ui_kit.py` 只放控件与设计令牌（含数据驱动的 `SettingsList` / `ask_text`）；`运行时.py` 只放与界面无关的运行时支撑（包括**日志行解析与清洗**：`strip_ansi` / `progress_pct` / `log_level` / `tag_for`，**日志落盘**：`LogFile` / `NoopLog`，**启动自检**：`STARTUP_PROBES` / `probe_path` / `startup_lines`，**设置项读写与打开**：`CONFIG_FIELDS` / `config_items` / `save_config` / `open_path`，**内置工作流清单**：`WORKFLOWS`），**两者都不 import 业务代码**（保持单向依赖：主程序 → 这两个模块）。分层要求：解析层只返回语义（级别名、标签名），**配色只由界面层的 `tag_config` 决定**；同理 `SettingsList` 不自己判路径对不对，`note` 由 `probe_path` 给出。✅ **v1.2.10 已按这条拆过一次**：主文件 **953 / 1000（余量 47）** —— v1.2.9 时只剩 5 行、加不动任何界面代码，于是把 `WORKFLOWS`、`_comfy_env`、`_gpu_by_nvidia_smi`、`_open_dir`、`_get_input` 下沉到 `运行时`、设置区整块交给 `ui_kit.SettingsList`。**余量再回到 30 行以下时，先拆再加。**
+- **模块拆分按阈值**：单文件逻辑行超过 pylint 默认上限（**1000**）才拆。`ui_kit.py` 只放控件与设计令牌（含数据驱动的 `SettingsList` / `ask_text`）；`运行时.py` 只放与界面无关的运行时支撑（包括**日志行解析与清洗**：`strip_ansi` / `progress_pct` / `log_level` / `tag_for`，**日志落盘**：`LogFile` / `NoopLog`，**启动自检**：`STARTUP_PROBES` / `probe_path` / `startup_lines`，**设置项读写与打开**：`CONFIG_FIELDS` / `config_items` / `save_config` / `open_path`，**内置工作流清单**：`WORKFLOWS`），**两者都不 import 业务代码**（保持单向依赖：主程序 → 这两个模块）。分层要求：解析层只返回语义（级别名、标签名），**配色只由界面层的 `tag_config` 决定**；同理 `SettingsList` 不自己判路径对不对，`note` 由 `probe_path` 给出。✅ **v1.2.11 又拆过一次**：`_render_wf_detail` 整块（~70 行）搬 `ui_kit.WorkflowDetail`，主文件 **959 / 1000（余量 41）**。✅ v1.2.10 也拆过：把 `WORKFLOWS`、`_comfy_env`、`_gpu_by_nvidia_smi`、`_open_dir`、`_get_input` 下沉到 `运行时`、设置区整块交给 `ui_kit.SettingsList`。**余量再回到 30 行以下时，先拆再加。**
 - **打包前先清进程 + 包后核对时间戳/体积**（v1.2.4 教训）：运行中的 exe 会锁住 `dist`，`--clean` 删不掉旧产物 → 构建中止却"看起来成功"。
 - 视觉改动必须**对齐设计稿**：蓝本见分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`；改完跑截图验证（`radon`/像素亮度），别只靠"看着像"。
 - 路径不写死：新增路径一律先进 `CONFIG` 字典，并允许 `启动器配置.json` 覆盖。
