@@ -708,6 +708,57 @@ def apply_input(api, video):
     return n
 
 
+def extract_first_frame(cfg, video):
+    """用 ffmpeg 抽视频首帧，存进 ComfyUI 的 input 目录（LoadImage 的取图语义）。
+
+    返回 (input 目录下的文件名, 错误串)。文件名固定，重复推送直接覆盖。
+    """
+    exe = os.path.join(str((cfg or {}).get("ffmpeg_dir", "") or ""), "ffmpeg.exe")
+    indir = os.path.join(str((cfg or {}).get("comfy_dir", "") or ""), "input")
+    if not os.path.isfile(str(video or "")):
+        return None, "素材不存在：%s" % video
+    if not os.path.isfile(exe):
+        return None, "找不到 ffmpeg.exe（%s）" % exe
+    try:
+        os.makedirs(indir, exist_ok=True)
+    except Exception as e:
+        return None, "建不了 ComfyUI input 目录：%r" % e
+    name = "launcher_first_frame.png"
+    out = os.path.join(indir, name)
+    try:
+        r = subprocess.run(
+            [exe, "-y", "-i", str(video), "-frames:v", "1", out],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace", timeout=60, check=False,
+            creationflags=NO_WINDOW)
+    except Exception as e:
+        return None, "ffmpeg 调用失败：%r" % e
+    if r.returncode != 0 or not os.path.isfile(out):
+        return None, "抽首帧失败（rc=%d）：%s" % (r.returncode, (r.stderr or "")[-160:])
+    return name, ""
+
+
+def apply_input_image(api, video, cfg):
+    """把图里 LoadImage 节点的图换成 video 的首帧。返回 (改动节点数, 提醒串)。
+
+    MiniMax I2V 这类方案吃的是图片（input 目录语义），启动器的输入却是视频 ——
+    约定：取所选视频的第一帧当首帧图。图里没有 LoadImage 时原样返回 (0, "")。
+    """
+    if not any(isinstance(nd, dict) and nd.get("class_type") == "LoadImage"
+               for nd in api.values()):
+        return 0, ""
+    v = str(video or "").strip().strip('"')
+    if not v:
+        return 0, "图生视频需要先选素材（要取它的首帧当首帧图）"
+    name, err = extract_first_frame(cfg, v)
+    if err:
+        return 0, err
+    for nd in api.values():
+        if isinstance(nd, dict) and nd.get("class_type") == "LoadImage":
+            nd.setdefault("inputs", {})["image"] = name
+    return 1, ""
+
+
 def apply_patch(api, patch):
     """按节点类名覆盖参数（如 FlashVSRNode 的 scale）。返回改动的节点数。"""
     patch = patch or {}
@@ -1003,21 +1054,26 @@ WORKFLOWS = [
      "api": FLASHVSR_API, "patch": {"FlashVSRNode": {"scale": 4}}},
     {"id": "sv_std", "engine": "seedvr2", "name": "SeedVR2 · 标准 1080p",
      "desc": "标准档，短边缩放到 1080，速度与质量平衡。",
+     "api": "workflows/SeedVR2/SeedVR2-12G-1080p.json",
      "steps": [("LoadVideo", "input_dir"), ("SeedVR2 标准档", "tile=512"),
                ("Resize 短边", "1080"), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
-    {"id": "sv_max", "engine": "seedvr2", "name": "SeedVR2 · 极致 原画",
-     "desc": "极致档，保留原画分辨率，显存占用高、最慢。",
+    {"id": "sv_max", "engine": "seedvr2", "name": "SeedVR2 · 极致 2160",
+     "desc": "极致档，短边冲 2160（4K），显存占用高、最慢。"
+             "（SeedVR2 没有「保持原画」参数，短边必须给目标值，故用 2160。）",
+     "api": "workflows/SeedVR2/SeedVR2-极致-2160.json",
      "steps": [("LoadVideo", "input_dir"), ("SeedVR2 极致档", "tile=384"),
                ("FaceRestore", "on"), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
     {"id": "mm_t2v", "engine": "minimax", "name": "MiniMax H3 · 文生视频 T2V",
      "desc": "用提示词直接生成视频（Text-to-Video）。",
+     "api": "workflows/MiniMax/MiniMax-H3-T2V.json",
      "steps": [("TextEncode", "prompt"), ("MiniMax H3", "T2V"),
                ("VAEDecode", ""), ("SaveVideo", "output_dir")],
      "inN": "0（纯文本）", "outN": "1 × SaveVideo"},
     {"id": "mm_i2v", "engine": "minimax", "name": "MiniMax H3 · 图生视频 I2V",
      "desc": "以首帧图片驱动生成视频（Image-to-Video）。",
+     "api": "workflows/MiniMax/MiniMax-H3-I2V.json",
      "steps": [("LoadImage", "first_frame"), ("MiniMax H3", "I2V"),
                ("VAEDecode", ""), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadImage", "outN": "1 × SaveVideo"},

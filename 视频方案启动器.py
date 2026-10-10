@@ -38,7 +38,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.14"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.15"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -555,7 +555,10 @@ class App(服务面板.服务面板):
                          for key, val in over.items()]
                 self.log("[工作流] 按方案覆盖 %d 处参数（%s）" % (k, "、".join(pairs)), "dim")
         n = rt.apply_input(api, video)
-        if video and not n:
+        n2, warn = rt.apply_input_image(api, video, CONFIG)   # v1.2.15：I2V 类方案取首帧
+        if warn:
+            self.log("[工作流] %s" % warn, "warn")
+        if video and not n and not n2:
             self.log("[工作流] 图里没有可替换的载入节点，沿用图内原路径", "dim")
         return api, why
 
