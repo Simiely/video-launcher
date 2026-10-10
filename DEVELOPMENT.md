@@ -4,19 +4,26 @@
 
 Python GUI，管理本地三套视频 AI 方案。定位是**编排器**：自己不做推理，只负责「拉服务 / 传参调脚本 / 回传日志」。
 
-- 组成（v1.2.8 起为三文件，零第三方依赖）：
-  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1171 行 / 逻辑行 974；版本号常量 `APP_VER` 在这里，窗口标题带它）
-  - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 846 行 / 逻辑行 696，**不 import 业务代码**）：
+- 组成（v1.2.14 起为四文件，零第三方依赖）：
+  - `视频方案启动器.py` —— 配置 + 业务逻辑 + 界面装配（约 1080 行 / 逻辑行 899；版本号常量 `APP_VER` 在这里，窗口标题带它）
+  - `服务面板.py` —— **App 的服务 mixin**（v1.2.14 自主文件拆出，约 230 行 / 逻辑行 219）：
+    服务启停 / 重启 / 队列清理 / 批量任务（`svc_*` / `_run_ps` / `_task_reader` 等 15 个方法）。
+    只通过 `self.*` 使用宿主 App 的成员（pylint 的 no-member 在类级豁免并写明原因）；
+    与主程序共享**同一个** `CONFIG` 字典（主程序启动时 `服务面板.CONFIG = CONFIG` 注入引用，
+    原地 update 不换绑定）。依赖方向不变：主 → 服务面板 → ui_kit / 运行时
+  - `ui_kit.py` —— 深色自绘控件库 + 设计令牌（约 858 行 / 逻辑行 705，**不 import 业务代码**）：
     含 **`SettingsList`**（数据驱动的设置项列表：标签行挂「打开」「修改」，值行可点）、
     **`ask_text`**（模态输入弹窗：目录 / 文件带「浏览…」，回车保存、Esc 取消）与
-    **`WorkflowDetail`**（工作流详情：节点步骤 + 2×2 指标网格 + 推送 / 入队按钮）
-  - `运行时.py` —— 与界面无关的运行时支撑（约 763 行 / 逻辑行 568）：子进程"不弹黑窗"标记、
+    **`WorkflowDetail`**（工作流详情：节点步骤 + 2×2 指标网格 + 推送 / 入队 / 备注按钮）
+  - `运行时.py` —— 与界面无关的运行时支撑（约 870 行 / 逻辑行 660）：子进程"不弹黑窗"标记、
     崩溃落盘、绕代理 HTTP、**日志行解析与清洗**（ANSI 剥离 / 进度 / 级别 / 着色分类）、
     **日志落盘**（`LogFile` / `NoopLog`）、**启动自检**（`probe_path` / `startup_lines`）、
     **设置项的读写与打开**（`config_items` / `save_config` / `open_path`）、
     **工作流 API 图的取用**（`pick_api` / `load_api` / `apply_input` / `apply_patch`）、
-    **外部 ComfyUI 进程的查找与结束**（`find_comfy_pids` / `find_main_py_pids` / `kill_pid` /
-    `stop_external`）、**内置工作流清单**。
+    **UI→API 转换器**（`is_ui_graph` / `ui_to_api` + `_ui_resolver` / `_ui_node_inputs` /
+    `_ui_input_value`，v1.2.14）、**工作流目录扫描**（`workflows_dir` / `scan_workflows` /
+    `read_workflow`）、**外部 ComfyUI 进程的查找与结束**（`find_comfy_pids` /
+    `find_main_py_pids` / `kill_pid` / `stop_external`）、**内置工作流清单**。
     **不 import 业务代码，也不 import tkinter / ui_kit**（单向：主程序 → 运行时）
 - 界面：深色 Fluent **三栏控制台**，蓝本为分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`
 - **三栏分工（v1.2.5 收敛后的稳定形态）**：整体是 **2×3 网格**——上排左 / 中 / 右三栏，下排一整条运行日志（`columnspan=2`，横跨中栏 + 右栏）
@@ -46,31 +53,23 @@ main()
      ├─ 导航 / 滚动
      │   ├─ _select_nav(key, scroll=True)  切引擎（重绘引擎卡）+ 滚到引擎卡（scroll=False 只切不滚）
      │   ├─ _scroll_to(widget)  按控件 y 换算 yview_moveto
-     │   ├─ _watch_expand(dd)   就地展开的下拉会撑高卡片 → 触发上排高度重新实测
      │   └─ _flash_wf()         引擎卡里的「工作流选择在右栏上方 ↑」→ 描边闪烁提示位置
-     ├─ 服务控制
-     │   ├─ svc_start()        Popen(comfy_py -u main.py --disable-pinned-memory
-     │   │                          --disable-async-offload --reserve-vram 1, creationflags=NO_WINDOW)
-     │   ├─ svc_restart()      先终止自有进程 → _restart_worker 轮询等服务退净 → 再起
-     │   ├─ _svc_reader()      线程：逐行读 stdout → queue
-     │   ├─ _svc_wait_ready()  线程：3s 轮询 /system_stats，最多 5 分钟，就绪自动开网页
-     │   ├─ svc_stop()         只终止自己拉起的进程（外部启起的会明确提示）
-     │   ├─ svc_stop_queue()   /interrupt（打断当前）+ /queue{"clear":true}（清排队）；
-     │   │                     先读 /queue 拿真实数量；外部启动的 ComfyUI 也能用
-     │   └─ open_web()         未运行时先 svc_start()，就绪后自动开页
-     ├─ 批量任务
-     │   ├─ _run_ps()          拼 PS 命令行 + Popen（creationflags=NO_WINDOW|NEW_PROCESS_GROUP）
-     │   ├─ _task_reader()     线程：回传日志，结束打印 rc / 耗时
-     │   ├─ run_flashvsr()     -InputPath / -Mode / -Scale / -Format / -AutoStart
-     │   └─ run_seedvr2()      -InputPath / -Profile / -Resolution / -Overwrite
+     ├─ 服务控制 / 批量任务（v1.2.14 起在 服务面板.py 的 mixin 里，方法清单见该文件头注释）
+     │   ├─ svc_start / svc_restart / svc_stop / svc_stop_queue / open_web
+     │   └─ _run_ps / _task_reader / run_flashvsr / run_seedvr2 等
      ├─ 工作流
-     │   ├─ _on_wf_select()    下拉选中：先当内置方案找，找不到再看 _local_wfs（v1.2.11）
-     │   ├─ _use_local()       把一份本地 API 图设为当前方案（下拉选中 / 刚加载 共用）
-     │   ├─ _load_wf_json()    选本地 .json → load_api → 登记进 _local_wfs + 追加进下拉选项
-     │   ├─ _wf_names()        下拉选项 = 内置方案名 + 加载过的本地文件名
+     │   ├─ _scan_wf_dir()     启动扫描 ComfyUI 工作流目录，.json 全部并入下拉（v1.2.14）
+     │   ├─ _rescan_wf_dir()   「刷新」：重扫目录 + 清 /object_info 与转换缓存
+     │   ├─ _on_wf_select()    下拉选中（显示名反查原名）：内置 → _local_wfs → 目录并入项（惰性读）
+     │   ├─ _use_local()       把一份本地图设为当前方案（下拉选中 / 刚加载 共用）
+     │   ├─ _preheat_api()     后台线程：选中外就提前转换 UI 图（_object_info + ui_to_api）
+     │   ├─ _ready_api()       推送前把图备成 API 格式：API 图深拷贝；UI 图转换（两级缓存）
+     │   ├─ _load_wf_json()    选本地 .json → read_workflow → 登记进 _local_wfs + 追加进下拉
+     │   ├─ _wf_names()        下拉显示名 = 内置 + 已加载 + 已并入，别名覆盖原名
+     │   ├─ _wf_alias_edit()   「备注」弹窗改名，落盘 CONFIG["wf_alias"]（v1.2.14）
      │   ├─ _push_wf()         编排：探活 → 取图 → POST /prompt（成功/失败各一行日志）
-     │   └─ _api_for()         备好要提交的图：本地图优先，否则读方案绑定的图 + 覆盖参数，
-     │                         两条来源都先把素材换成界面选的输入（apply_input）
+     │   └─ _api_for()         备好要提交的图：本地图优先（先过 _ready_api 转换），
+     │                         否则读方案绑定的图 + 覆盖参数；两条来源都先把素材换成界面选的输入
      ├─ 日志
      │   ├─ log(msg, tag)      只往 logq 投递（后台线程也安全）；tag 为 None 时由 _tag_for 判
      │   ├─ _drain_log()       主线程心跳（150ms）：排空 logq + uiqueue，try/finally 保证重排程

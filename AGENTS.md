@@ -1,12 +1,12 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-10 **v1.2.13**（commit hash 见 docs 提交）**外部拉起的 ComfyUI 也能停 / 重启（按命令行找进程：`find_comfy_pids` + `taskkill /T /F`；cwd 启动的只列不杀）** + 布局收敛：服务卡回中栏顶部 + 工作流下拉改弹出浮层（布局不再被撑动）+ 服务卡四按钮一行等大（统一 minwidth）+ 上排高度 = max(右栏工作流卡+冗余, 中栏兜底)（v1.2.12）+ 内置方案绑定真实 API 图可直推 + 加载图进下拉 + 停止队列任务（v1.2.11）+ 设置项可打开可手改（v1.2.10）+ 启动自检（v1.2.9）+ 日志落盘（v1.2.8）+ ComfyUI 日志保真（v1.2.6）
+> 📌 **文档基线**：2026-10-10 **v1.2.14**（commit hash 见 docs 提交）**ComfyUI 工作流全量并入（启动扫工作流目录）+ UI→API 转换器（本地图从"能选不能推"变"可直推"）+ 工作流备注名（`wf_alias` 落盘）+ 主文件拆出 `服务面板.py` mixin（974→899 逻辑行）** + 外部拉起的 ComfyUI 也能停 / 重启（按命令行找进程：`find_comfy_pids` + `taskkill /T /F`；cwd 启动的只列不杀）（v1.2.13）+ 布局收敛：服务卡回中栏顶部 + 工作流下拉改弹出浮层（布局不再被撑动）+ 服务卡四按钮一行等大（统一 minwidth）+ 上排高度 = max(右栏工作流卡+冗余, 中栏兜底)（v1.2.12）+ 内置方案绑定真实 API 图可直推 + 加载图进下拉 + 停止队列任务（v1.2.11）+ 设置项可打开可手改（v1.2.10）+ 启动自检（v1.2.9）+ 日志落盘（v1.2.8）+ ComfyUI 日志保真（v1.2.6）
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ## 技术栈
 
 - Python **3.12+**（本机 3.13.15），**纯标准库**：`tkinter`（**自绘控件，不用 ttk**）/ `subprocess` / `threading` + `queue` / `urllib.request` / `json` / `webbrowser`
-- **三文件结构（v1.2.5 起）**：`视频方案启动器.py`（配置 + 业务 + 界面装配；**版本号常量 `APP_VER`**，窗口标题带它） + `ui_kit.py`（深色自绘控件库 + 设计令牌，含 `SettingsList` 设置项列表 / `ask_text` 模态输入弹窗 / `WorkflowDetail` 工作流详情） + `运行时.py`（与界面无关的运行时支撑：`NO_WINDOW` / 绕代理 HTTP / 崩溃落盘 / **日志行解析与清洗** / **日志落盘** / **启动自检** / **设置项读写与打开** / **工作流 API 图取用**：`pick_api` / `load_api` / `apply_input` / `apply_patch` / 内置工作流清单）
+- **四文件结构（v1.2.14 起）**：`视频方案启动器.py`（配置 + 业务 + 界面装配；**版本号常量 `APP_VER`**，窗口标题带它） + `服务面板.py`（**App 的服务 mixin**：服务启停 / 重启 / 队列清理 / 批量任务 15 个方法，v1.2.14 拆出；与主程序共享**同一个** CONFIG 字典——启动时注入引用） + `ui_kit.py`（深色自绘控件库 + 设计令牌，含 `SettingsList` 设置项列表 / `ask_text` 模态输入弹窗 / `WorkflowDetail` 工作流详情） + `运行时.py`（与界面无关的运行时支撑：`NO_WINDOW` / 绕代理 HTTP / 崩溃落盘 / **日志行解析与清洗** / **日志落盘** / **启动自检** / **设置项读写与打开** / **工作流 API 图取用与 UI→API 转换**：`pick_api` / `load_api` / `read_workflow` / `apply_input` / `apply_patch` / `ui_to_api` / **工作流目录扫描**：`scan_workflows` / 内置工作流清单）
 - 打包：PyInstaller（`VideoLauncher.spec`，单文件、`console=False`、**`upx=False`**；会自动跟随 `import ui_kit` / `import 运行时`）
 - 宿主链路：PowerShell 5.1 → `video-upscale-deploy` 下的 `.ps1` → ComfyUI（`127.0.0.1:8188`）
 
@@ -37,6 +37,9 @@
 - **`pack(expand=True)` 不会把按钮等分——要等大就统一请求宽（`minwidth`）**（v1.2.12）：Canvas 类自绘按钮的请求宽 = 文字宽 + 内边距，pack 的 expand 只平分**多余**空间，基础分配按各自请求宽——"停止队列任务"6 个字天生比 4 字按钮宽两个字的量，怎么分都错位。服务卡四钮统一 `minwidth=112` 后实测 144/145/145/145 全等。同理，"没溢出容器"的断言测不出这种错位，要断言"四钮宽全等 + 同一排"。
 - **结束"不属于自己"的进程：匹配要保守，歧义时只列不杀**（v1.2.13）：外部 ComfyUI 靠命令行 / 可执行路径里带配置目录来认（`find_comfy_pids`），cwd 方式启动的（命令行只有 `main.py`、工作目录不进 `Win32_Process.CommandLine`）**永远只列为疑似候选**——别的程序也可能叫 `main.py`，自动杀会误伤用户无关进程。查询失败（None）≠ 没找到（[]），话术必须分开。
 - **拼外部 DSL（WQL / 正则 / SQL）别用 `%` 格式化，占位符替换后要核对通配符**（v1.2.13）：`Name like '%python%'` 里的 `%p` / `%'` 会被 Python 当格式符炸掉；换成占位符替换后又把 `%` 丢了变成精确匹配——**返回空且不报错**，看着就像"本机没有 python 进程"。对照实验（去掉过滤列全部 / 加回过滤变空）两步锁定。
+- **UI 格式工作流不能直接 POST `/prompt`**（v1.2.14）：`/prompt` 的 `validate_prompt` 第一个循环就要求每项带 `class_type`，UI 格式（nodes 数组）直接 `missing_node_type`。要推必须经 `ui_to_api` 转换，转换依据 `/object_info`（**跑着的服务才有**；缓存一份，ComfyUI 重启过要失效重取）。
+- **UI→API 的值位对齐有两个反直觉点**（v1.2.14）：① 前端给**名字带 seed 的 INT/FLOAT 一律追加**"随机化选项"占位——哪怕节点定义里没有 `control_after_generate`（SeedVR2VideoUpscaler 实测值数组 13 位、部件 12 个），只认定义会整串错位；② 被**转成输入槽还连了线**的部件照样占值位（CreateVideo 的 fps），值位游标按定义序对每个部件类输入前进，连线只决定值从哪来。正确性判据是**类型对齐**：转完逐输入和 object_info 的类型/选项集比对，错位立刻现形。
+- **旁路（mode=4）与静音（mode=2）语义不同**（v1.2.14）：旁路节点不进 API 图、输出由同类型输入直通顶替（直通不了且下游可选 → 整个省略）；静音节点同样不进图——**但若把静音节点放进 API 图它会被执行**，绝不许。Reroute 是前端虚拟节点（object_info 里没有），按透明直通处理；Note/MarkdownNote 是便签，跳过。
 - **自绘按钮要断言"实际宽 ≥ 需求宽"，不是只测"没溢出容器"**（v1.2.11）：文字超宽时被**按钮自己**裁掉，按钮框还好好地留在容器里 —— "末按钮右缘 ≤ 卡片右缘"这类断言恒 PASS，测不出截断。加按钮前先算"平分宽 vs `font.measure(文字)+padding`"，不够就换行排布（服务卡四个按钮就是两行）；渲染验证补"需求宽 ≤ 实际宽 + 同排按钮 y 相等"两条断言。
 - **量尺寸前先跑 idle**（v1.2.5）：Tk 几何计算是 idle 任务，刚 `pack` 完读 `winfo_reqheight()` 拿到的是**旧值**（实测 263 vs 500）。任何"按需求高度自适应"的实测前必须 `update_idletasks()`，并加标志防重入。
 - **算容器需求别手数 pady**（v1.2.5）：用 `子控件.winfo_rooty() − 容器.winfo_rooty() + 子控件.winfo_reqheight()` 取最大值；手写 `A + S(14) + B` 实测漏算过 14px。
@@ -51,9 +54,9 @@
 - UI 文案、注释、日志**全中文**；**零第三方依赖**，不引入 `requests` / `psutil` 等（打包体积与离线可用性优先）。
 - **左导航只放「会切换中栏内容」的入口**：导航项只有三个引擎。服务卡 / 工作流卡 / 设置都是**常显区**，不做导航项（v1.2.1、v1.2.3 两次收敛同一类问题）。引擎切换的唯一入口是 `_select_nav`，不该跳视野时用 `scroll=False`。
 - **三栏分工（v1.2.5 起为 2×3 网格）**：上排 左＝导航 + **设置常驻**（`_build_settings_section` → `ui_kit.SettingsList`；每项两行，标签行挂「打开」「修改」，值行本身也可点改）/ 中＝滚动舞台（只放引擎卡，无小标题、无切换按钮）/ 右＝**服务卡 → 工作流卡**；下排＝**运行日志横跨中栏 + 右栏**（`row=1, column=1, columnspan=2`），左栏 `rowspan=2` 通高。**卡片换容器＝换可用宽度**，搬动时按新栏宽重排（横排→纵排 / 网格，重设 `wraplength`）。`_scroll_to()` 只对还在 `self.stage` 里的控件有效。
-- **上排高度＝内容实测，剩余全给日志**（v1.2.5）：上排**不给 weight**，`_sync_top_height()` 实测后写回 `rowconfigure(0, minsize=...)`；下排 `weight=1` 吃剩余。**只在内容变化时调用**（切引擎 / 选工作流 / 下拉展开收起）—— 在 `<Configure>` 里无条件调会和 `<Configure>` 形成布局回环。就地展开的 `Dropdown` 会撑高卡片，故新增下拉要挂 `_watch_expand()`。
+- **上排高度＝内容实测，剩余全给日志**（v1.2.5）：上排**不给 weight**，`_sync_top_height()` 实测后写回 `rowconfigure(0, minsize=...)`；下排 `weight=1` 吃剩余。**只在内容变化时调用**（切引擎 / 选工作流）—— 在 `<Configure>` 里无条件调会和 `<Configure>` 形成布局回环。v1.2.12 起下拉是弹出浮层，展开 / 收起不再改变布局高度。
 - **窗口尺寸**（v1.2.5）：1260×960 / `minsize` 1040×940，且 `min(设计值, 屏幕可用区)` 夹住 —— 高分屏下 `S()` 会放大（125% 时 `S(900)=1125`），不夹的话 1080p 屏上窗口底部（日志）会被顶到屏幕外。**改布局后必须重算每行需求高度**，否则下排会把上排挤到截断（按钮落折叠线下）。渲染验证要断言"控件底 ≤ 可视底"与"实际高 ≥ 请求高"。
-- **模块拆分按阈值**：单文件逻辑行超过 pylint 默认上限（**1000**）才拆。`ui_kit.py` 只放控件与设计令牌（含数据驱动的 `SettingsList` / `ask_text`）；`运行时.py` 只放与界面无关的运行时支撑（包括**日志行解析与清洗**：`strip_ansi` / `progress_pct` / `log_level` / `tag_for`，**日志落盘**：`LogFile` / `NoopLog`，**启动自检**：`STARTUP_PROBES` / `probe_path` / `startup_lines`，**设置项读写与打开**：`CONFIG_FIELDS` / `config_items` / `save_config` / `open_path`，**内置工作流清单**：`WORKFLOWS`），**两者都不 import 业务代码**（保持单向依赖：主程序 → 这两个模块）。分层要求：解析层只返回语义（级别名、标签名），**配色只由界面层的 `tag_config` 决定**；同理 `SettingsList` 不自己判路径对不对，`note` 由 `probe_path` 给出。✅ **v1.2.11 又拆过一次**：`_render_wf_detail` 整块（~70 行）搬 `ui_kit.WorkflowDetail`。✅ v1.2.12：`Dropdown` 弹出化 + `_watch_expand` 退役后主文件 **953 / 1000（余量 47）**。✅ v1.2.10 也拆过：把 `WORKFLOWS`、`_comfy_env`、`_gpu_by_nvidia_smi`、`_open_dir`、`_get_input` 下沉到 `运行时`、设置区整块交给 `ui_kit.SettingsList`。**余量再回到 30 行以下时，先拆再加。**
+- **模块拆分按阈值**：单文件逻辑行超过 pylint 默认上限（**1000**）才拆。`ui_kit.py` 只放控件与设计令牌（含数据驱动的 `SettingsList` / `ask_text`）；`运行时.py` 只放与界面无关的运行时支撑（包括**日志行解析与清洗**：`strip_ansi` / `progress_pct` / `log_level` / `tag_for`，**日志落盘**：`LogFile` / `NoopLog`，**启动自检**：`STARTUP_PROBES` / `probe_path` / `startup_lines`，**设置项读写与打开**：`CONFIG_FIELDS` / `config_items` / `save_config` / `open_path`，**内置工作流清单**：`WORKFLOWS`），**两者都不 import 业务代码**（保持单向依赖：主程序 → 这两个模块）。分层要求：解析层只返回语义（级别名、标签名），**配色只由界面层的 `tag_config` 决定**；同理 `SettingsList` 不自己判路径对不对，`note` 由 `probe_path` 给出。✅ **v1.2.14 又拆过一次**：服务启停 / 批量任务 15 个方法搬 `服务面板.py`（App 的 mixin，主文件 **899 / 1000，余量 101**；mixin 的 no-member 误报在类级豁免并写明原因）。✅ v1.2.11 拆过：`_render_wf_detail` 整块（~70 行）搬 `ui_kit.WorkflowDetail`。✅ v1.2.12：`Dropdown` 弹出化 + `_watch_expand` 退役。**余量再回到 30 行以下时，先拆再加。**
 - **打包前先清进程 + 包后核对时间戳/体积**（v1.2.4 教训）：运行中的 exe 会锁住 `dist`，`--clean` 删不掉旧产物 → 构建中止却"看起来成功"。
 - 视觉改动必须**对齐设计稿**：蓝本见分支 `ui-redesign` 的 `redesign/video_launcher_sidebar.html`；改完跑截图验证（`radon`/像素亮度），别只靠"看着像"。
 - 路径不写死：新增路径一律先进 `CONFIG` 字典，并允许 `启动器配置.json` 覆盖。
