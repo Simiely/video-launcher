@@ -677,6 +677,24 @@ def load_api(path):
     return data, ""
 
 
+def read_workflow(path):
+    """读一份工作流 json —— UI 格式 / API 格式都收（是哪种交给 is_ui_graph 判）。
+
+    load_api 收紧了校验（只认 API 扁平表），这里保持宽松：ComfyUI 网页里存的
+    工作流都是 UI 格式，读进来先给下拉和详情用，推送前才转换。返回 (数据, 错误串)。
+    """
+    if not path or not os.path.exists(path):
+        return None, "工作流文件不存在：%s" % path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as e:
+        return None, "工作流解析失败：%r" % e
+    if not isinstance(data, dict) or not data:
+        return None, "工作流内容不是 JSON 对象"
+    return data, ""
+
+
 def apply_input(api, video):
     """把图里"载入视频"节点的素材换成 video。返回改动的节点数（0 = 图里没有这类节点）。"""
     v = str(video or "").strip().strip('"')
@@ -716,6 +734,249 @@ def api_node_count(api):
     if isinstance(inner, dict) and isinstance(inner.get("nodes"), list):
         return len(inner["nodes"])
     return len(api)
+
+
+# ================================================================ UI 图 → API 图
+# 前端保存的工作流（user/default/workflows 下的那些）是"UI 格式"：nodes 数组 +
+# links 连线表 + widgets_values 值数组；而 /prompt 只收"API 格式"（{节点id:
+# {class_type, inputs}} 的扁平表，本机 ComfyUI 的 execution.validate_prompt 第一
+# 个循环就要求每项带 class_type，UI 格式直接报 missing_node_type）。
+# 所以「把 ComfyUI 里存的工作流并进启动器」的关键就是这步转换 —— 规则对齐前端
+# 的 graphToPrompt：
+#   * 连接输入的值 = [来源节点id, 输出槽号]（按 UI inputs 里的 link 找连线）；
+#   * 小部件的值按 object_info 定义顺序（required 在前 optional 在后）从
+#     widgets_values 里依序取用 —— 所以下发前必须拿到 /object_info 的节点定义；
+#   * 名字带 seed 的 INT/FLOAT、以及定义里标 control_after_generate 的输入，
+#     后面各多占一位"随机化选项"的值，取用时跳过；
+#   * 旁路（mode=4）节点不进 API 图，它的输出由"同类型输入"直通顶替；
+#     直通不了且下游接的是可选输入 → 该输入整个省略（真实案例：seedvr2 示例图
+#     旁路的 TorchCompileSettings 没有任何输入连线，它的输出只喂可选槽）。
+#   * Note / MarkdownNote 是画布便签，不是可执行节点，直接跳过。
+#
+# 值数组还有第三种形态：VHS 系列节点存成 {名字: 值} 的字典（老序列化），按名
+# 映射即可，不用对位。
+#
+# 前端导出的节点 id 是数字，API 图的键是字符串化的 id —— 字符串化这一步别漏，
+# 否则 ComfyUI 4.2+ 的 job 调度找不到节点。
+
+_UI_NOTE_TYPES = ("Note", "MarkdownNote")
+_WIDGET_TYPES = ("INT", "FLOAT", "STRING", "BOOLEAN", "COMBO")
+
+
+def _spec_type(spec):
+    """object_info 输入定义的类型名；COMBO 的选项列表形态返回 None（按部件算）。"""
+    if isinstance(spec, list) and spec:
+        return spec[0]
+    return None
+
+
+def _spec_opts(spec):
+    """object_info 输入定义的选项字典（没有就空字典）。"""
+    if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict):
+        return spec[1]
+    return {}
+
+
+def is_ui_graph(data):
+    """这份图是 UI 格式吗？（nodes 数组 = UI 格式；否则当 API 扁平表用）"""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get("nodes"), list):
+        return True
+    inner = data.get("api")
+    return isinstance(inner, dict) and isinstance(inner.get("nodes"), list)
+
+
+def _ui_resolver(nodes, links, defs):
+    """造一个 resolve(节点id, 输出槽号) 函数：连线起点落地成 API 值。
+
+    规则见 ui_to_api 的注释：旁路（mode=4）顺着同类型输入往前找、Reroute
+    纯拐弯、静音（mode=2）报错。返回 (值, 错误串)；(None, "") 表示"旁路死头 +
+    下游是可选输入，可整体省略"。
+    """
+    byid = {n.get("id"): n for n in nodes}
+
+    def resolve(nid, slot, depth=0):
+        if depth > 16:
+            return None, "旁路直通链超过 16 层，图可能有问题"
+        n = byid.get(nid)
+        if n is None:
+            return None, "连线指向不存在的节点 #%s" % nid
+        if n.get("type") == "Reroute":
+            # Reroute 是前端虚拟节点（object_info 里没有），纯粹把线拐个弯：
+            # 唯一的输入连到哪，输出就是哪。
+            for inp in n.get("inputs") or []:
+                lid = inp.get("link")
+                if lid is None:
+                    continue
+                lk = links.get(lid)
+                if lk is not None:
+                    return resolve(lk[1], lk[2], depth + 1)
+            return None, ""
+        m = n.get("mode", 0)
+        if m == 0:
+            return [str(nid), slot], ""
+        if m == 4:
+            outs = (defs.get(n.get("type")) or {}).get("output") or []
+            want = outs[slot] if slot < len(outs) else None
+            for inp in n.get("inputs") or []:
+                lid = inp.get("link")
+                if lid is None:
+                    continue
+                lk = links.get(lid)
+                if lk is None:
+                    continue
+                if want is None or inp.get("type") in (want, "*") or want == "*":
+                    return resolve(lk[1], lk[2], depth + 1)
+            return None, ""          # 旁路死头：没有可直通的输入，交由调用方按可选省略
+        return None, "节点「%s」被静音（mode=%s），它的下游没法推" % (
+            n.get("title") or n.get("type"), m)
+
+    return resolve
+
+
+def _ui_input_value(name, spec, ui_in, wv, k, link_val):
+    """定一个输入的最终值。返回 (是否处理, 值, 错误串, 新的值位游标 k)。
+
+    False = 这是没连线的连接槽（可选的省略、必填的交给服务端报），游标原样传回。
+    """
+    t = _spec_type(spec)
+    opts = _spec_opts(spec)
+    conv = name in ui_in and "widget" in ui_in[name]
+    widgety = ((not isinstance(t, str)) or t in _WIDGET_TYPES or conv)
+    linked = name in ui_in and ui_in[name].get("link") is not None
+    if widgety and not opts.get("forceInput"):
+        # 部件类输入**一律占一位值**（哪怕被转成输入槽还连了线，
+        # widgets_values 里也留着它的旧值，见 CreateVideo 的 fps）。
+        slot = k
+        k += 1
+        if t in ("INT", "FLOAT") and (opts.get("control_after_generate")
+                                      or "seed" in name.lower()):
+            k += 1                # 前端给 seed 类输入追加"随机化选项"，多占一位
+        if linked:
+            val, err = link_val(ui_in[name]["link"])
+        elif slot < len(wv):
+            val, err = wv[slot], ""
+        else:
+            val, err = None, ""   # 值数组不够长：可选就省略
+        return True, val, err, k
+    if linked:                    # 连接槽（IMAGE/MODEL 这类，不占值位）
+        val, err = link_val(ui_in[name]["link"])
+        return True, val, err, k
+    return False, None, "", k
+
+
+def _ui_node_inputs(n, defs, links, resolve):
+    """单个 UI 节点的 inputs 映射。返回 (inputs, 错误串)。
+
+    值位规则见 ui_to_api 的注释：部件类输入按 object_info 定义序对位取值
+    （连线了的也占位、只是值改从连线来）；连接槽不占值位；seed 类部件在
+    前端多带一位"随机化选项"，取用时要跳过。
+    """
+    idef = defs[n["type"]].get("input") or {}
+    req = idef.get("required") or {}
+    opt = idef.get("optional") or {}
+    ui_in = {i.get("name"): i for i in n.get("inputs") or []}
+    wv = n.get("widgets_values")
+    if isinstance(wv, dict):          # VHS 老序列化：{名字: 值}，按名映射
+        return {k: v for k, v in wv.items() if k in req or k in opt}, ""
+
+    def link_val(lid):
+        lk = links.get(lid)
+        if lk is None:
+            return None, "引用了找不到的连线 #%s" % lid
+        return resolve(lk[1], lk[2])
+
+    wv = list(wv or [])
+    inputs = {}
+    k = 0
+    for sect in (req, opt):
+        for name, spec in sect.items():
+            handled, val, err, k = _ui_input_value(name, spec, ui_in, wv, k, link_val)
+            if not handled:
+                continue
+            if err:
+                return None, "输入 %s %s" % (name, err)
+            if val is not None:
+                inputs[name] = val
+    return inputs, ""
+
+
+def ui_to_api(ui, defs):
+    """UI 格式 → API 扁平表。返回 (图, 错误串)；转换不了时图为 None、错误串说明原因。
+
+    defs = /object_info 的解析结果（class → 定义）。规则对齐前端 graphToPrompt：
+      * 连接输入的值 = [来源节点id, 输出槽号]（按 UI inputs 里的 link 找连线）；
+      * 小部件的值按定义顺序（required 在前 optional 在后）从 widgets_values
+        里对位取用 —— 所以下发前必须拿到 /object_info 的节点定义；
+      * 名字带 seed 的 INT/FLOAT、定义里标 control_after_generate 的输入，
+        后面各多占一位"随机化选项"的值，取用时跳过；
+      * 旁路（mode=4）节点不进 API 图，输出由"同类型输入"直通顶替；直通不了
+        且下游接的是可选输入 → 该输入整个省略（真实案例：seedvr2 示例图里旁路的
+        TorchCompileSettings 自己没有任何输入连线，输出只喂可选槽）；
+      * Note / MarkdownNote 是画布便签、Reroute 是纯拐弯，都不进 API 图。
+    子图节点（新前端的 definitions.subgraphs，类型是一串 UUID）暂不支持 ——
+    要推请先在 ComfyUI 里把子图展开再保存。
+    """
+    if not isinstance(ui, dict) or not isinstance(ui.get("nodes"), list):
+        return None, "不是 UI 格式的工作流（缺 nodes 数组）"
+    if not isinstance(defs, dict) or not defs:
+        return None, "没有节点定义（/object_info），转换无从谈起"
+    nodes = ui["nodes"]
+    links = {}
+    for lk in ui.get("links") or []:
+        if isinstance(lk, list) and len(lk) >= 5:
+            links[lk[0]] = lk
+    resolve = _ui_resolver(nodes, links, defs)
+    api = {}
+    for n in nodes:
+        cls = n.get("type")
+        if cls in _UI_NOTE_TYPES or cls == "Reroute":
+            continue                  # 便签 / 拐弯节点：不可执行，也不占 API 图
+        if not isinstance(cls, str) or cls not in defs:
+            return None, ("图里有本机 ComfyUI 认不了的节点（%s）——要么插件没装，"
+                          "要么是暂不支持的子图，请在 ComfyUI 里展开后再存" % cls)
+        if n.get("mode", 0) != 0:
+            continue                  # 旁路 / 静音节点都不进 API 图（静音的进了会被执行！）
+        inputs, err = _ui_node_inputs(n, defs, links, resolve)
+        if err:
+            return None, "节点「%s」%s" % (n.get("title") or cls, err)
+        api[str(n.get("id"))] = {"class_type": cls, "inputs": inputs,
+                                 "_meta": {"title": n.get("title") or cls}}
+    if not api:
+        return None, "图里没有可执行节点（全是便签、旁路或静音？）"
+    return api, ""
+
+
+# ================================================================ 工作流目录扫描
+# ComfyUI 自己把网页里保存的工作流放在 <comfy_dir>/user/default/workflows/。
+# 启动器每次启动扫一遍这个目录，目录里的 .json 全部进下拉 —— 用户在 ComfyUI
+# 里存了新图，重启启动器（或点刷新）就能看到，不用再手动「加载 .json」。
+# 路径可在 启动器配置.json 里加 "comfy_workflows_dir" 覆盖（不进设置界面，
+# 免得左栏高度又得动）。
+
+
+def workflows_dir(cfg):
+    """ComfyUI 存工作流的目录：配置可覆盖，默认从 comfy_dir 派生。"""
+    over = str((cfg or {}).get("comfy_workflows_dir", "") or "").strip()
+    if over:
+        return over
+    return os.path.join(str((cfg or {}).get("comfy_dir", "") or ""),
+                        "user", "default", "workflows")
+
+
+def scan_workflows(cfg):
+    """扫工作流目录。返回 (文件名列表有序, 错误串)；目录不在不算错，返回空表。"""
+    d = workflows_dir(cfg)
+    if not os.path.isdir(d):
+        return [], "工作流目录不存在：%s" % d
+    try:
+        names = sorted(f for f in os.listdir(d)
+                       if f.lower().endswith(".json")
+                       and os.path.isfile(os.path.join(d, f)))
+    except Exception as e:
+        return [], "工作流目录读不了：%r" % e
+    return names, ""
 
 
 # ================================================================ 内置工作流清单

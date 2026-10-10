@@ -702,18 +702,22 @@ class WorkflowDetail(tk.Frame):
       * nodes     = 节点数（内置方案传 len(steps)，本地传解析出的节点数）
       * on_change = 内容变了（高度跟着变）时回调，供业务层重排上排高度
       * on_push   = 点「推送 / 加入队列」时回调，参数 to_queue（True = 入队）
+      * on_alias  = 点「备注」时回调（v1.2.14，只对本地工作流显示；内置方案名是
+                    精修过的文案，不允许改）
+      * alias     = 备注名：显示名换成它，原名照旧出现在"已从本地加载"一行里
     """
 
     def __init__(self, master, *, engines, outer=CARD, nodes=None,
-                 on_change=None, on_push=None, wf=None, local_name=None):
+                 on_change=None, on_push=None, on_alias=None, wf=None, local_name=None):
         super().__init__(master, bg=outer)
         self._engines = engines or {}
         self.on_change = on_change
         self.on_push = on_push
+        self.on_alias = on_alias
         self.nodes = nodes
         self.show(wf, local_name)
 
-    def show(self, wf=None, local_name=None, nodes=None):
+    def show(self, wf=None, local_name=None, nodes=None, alias=None):
         if nodes is not None:
             self.nodes = nodes
         for c in self.winfo_children():
@@ -745,7 +749,7 @@ class WorkflowDetail(tk.Frame):
             desc, steps = wf["desc"], wf["steps"]
             inN, outN = wf["inN"], wf["outN"]
         else:
-            name, badge, bcol = local_name, "本地", AMBER
+            name, badge, bcol = (alias or local_name), "本地", AMBER
             desc = "已从本地加载：%s" % local_name
             steps, inN, outN = [], "—", "—"
         tk.Label(head, text=badge, bg=bcol, fg=DARKTX, font=f(8, True),
@@ -789,6 +793,12 @@ class WorkflowDetail(tk.Frame):
                 fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
                 font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
                                                      padx=(S(8), 0))
+        if local_name and self.on_alias:
+            # 「备注」（v1.2.14）：挤同一行（三个 stretch 平分），不给卡片加一行高度
+            RButton(acts, text="备注", command=self.on_alias,
+                    fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
+                    font=f(9), pady=6, stretch=True).pack(side="left", fill="x",
+                                                          expand=True, padx=(S(8), 0))
         self._changed()
 
     def _push(self, to_queue):

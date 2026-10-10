@@ -19,20 +19,17 @@ import copy
 import json
 import os
 import queue
-import subprocess
 import sys
 import threading
-import time
-import webbrowser
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 import ui_kit
 import 运行时 as rt
 from ui_kit import (
     S, f, mono,
-    BG, CARD, CARD2, BORDER, HOVER, TXT, TXT2,
+    BG, CARD, CARD2, BORDER, TXT, TXT2,
     BLUE, PURP, TEAL, GREEN, AMBER, RED, DARKTX, MUTED,
     RoundedFrame, RButton, swatch_text, NavItem, Dropdown, ChipRow,
     CheckBox, ProgressBar,
@@ -41,7 +38,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.13"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.14"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -61,6 +58,9 @@ if os.path.exists(_cfg_path):                       # 允许用同名 JSON 覆�
     except Exception as e:
         print("配置文件读取失败，用默认值：", e)
 
+import 服务面板
+服务面板.CONFIG = CONFIG    # mixin 与主程序共用同一份配置字典（原地 update，引用不变）
+
 def engine_ps(engine):
     """引擎批量放大脚本的路径。
 
@@ -69,8 +69,6 @@ def engine_ps(engine):
     """
     return os.path.join(CONFIG["deploy_root"], engine, "批量放大.ps1")
 
-ps_quote = rt.ps_quote            # 命令串转义（实现在 运行时.py，别名保留以便调用/测试）
-NO_WINDOW = rt.NO_WINDOW          # 子进程"不弹黑窗"标记（GUI 程序里每个 Popen 都要带）
 strip_ansi = rt.strip_ansi        # 日志清洗：剥掉 ComfyUI 新版注入的 ANSI 颜色码
 
 MAX_LOG_LINES = 2000           # 日志区保留的最大行数，超出自动裁剪（防长任务日志无限增长拖慢 UI）
@@ -109,7 +107,7 @@ def _write_crash(kind, exc_type, exc, tb):
     rt.write_crash(_CRASH_LOG_PATH, kind, exc_type, exc, tb)
 
 
-class App:
+class App(服务面板.服务面板):
     def __init__(self, root):
         self.root = root
         root.title("视频方案启动器 " + APP_VER)
@@ -137,6 +135,11 @@ class App:
         self._log_lines = 0             # 日志区当前行数（自维护，用于裁剪，不依赖 Text.count）
         self._loaded_api = None         # 已加载的本地工作流（API 格式 JSON）
         self._local_wfs = {}            # 本次运行加载过的本地 .json：文件名 → 图（下拉里能再选回来）
+        self._scanned = {}              # v1.2.14 ComfyUI 工作流目录扫描结果：文件名 → 图（选中才读，惰性）
+        self._wf_api = {}               # UI 图转好的 API 图缓存：文件名 → 图（转换要 /object_info，别反复转）
+        self._objinfo = None            # /object_info 缓存（1MB+，一次会话取一回；「刷新」会清）
+        self._wf_alias = dict(CONFIG.get("wf_alias") or {})   # 工作流备注名：原名 → 备注名（落盘）
+        self._cur_wf_src = None         # 当前选中的本地/扫描工作流**原名**（转换缓存与备注的键）
         self._active_wf_id = None
         self._probe_state = {"alive": False, "starting": False, "own": False,
                              "version": "?", "gpu": ""}
@@ -154,6 +157,7 @@ class App:
         self._build_ui()
         # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
         self._select_nav("flashvsr", scroll=False)
+        self._scan_wf_dir()             # v1.2.14：把 ComfyUI 里存的工作流并入下拉
         self._drain_log()
         self._probe_loop()
 
@@ -308,26 +312,40 @@ class App:
         self.btn_load = RButton(head, text="加载 .json", command=self._load_wf_json,
                                 fill=TEAL, fg=DARKTX, border=None, outer=CARD, font=f(9), pady=6)
         self.btn_load.pack(side="right")
+        self.btn_rescan = RButton(head, text="刷新", command=self._rescan_wf_dir,
+                                  fill="transparent", fg=TXT, border=BORDER, outer=CARD,
+                                  font=f(9), pady=6)
+        self.btn_rescan.pack(side="right", padx=(0, S(6)))
 
         tk.Label(b, text="工作流", bg=CARD, fg=TXT2, font=f(9), anchor="w").pack(fill="x")
         self.wf_dd = Dropdown(b, self._wf_names(), command=self._on_wf_select,
                               outer=CARD, placeholder="— 请选择一套内置工作流 —", font=f(10))
         self.wf_dd.pack(fill="x", pady=(S(5), 0))
-        self.wf_nodes = tk.Label(b, text="未选择 · 共 %d 套内置" % len(WORKFLOWS),
+        self.wf_nodes = tk.Label(b, text="未选择 · 内置 %d 套" % len(WORKFLOWS),
                                  bg=CARD, fg=TXT2, font=f(8), anchor="w")
         self.wf_nodes.pack(fill="x", pady=(S(6), 0))
 
         self.wf_detail = ui_kit.WorkflowDetail(b, engines=ENG, outer=CARD,
                                                on_change=self._schedule_top_sync,
-                                               on_push=self._push_wf)
+                                               on_push=self._push_wf,
+                                               on_alias=self._wf_alias_edit)
 
     # ---- 工作流的选 / 载 / 推 ----
-    def _on_wf_select(self, name):
-        """下拉里选了某一项：先当内置方案找，找不到再看是不是加载过的本地 .json。"""
-        wf = next((w for w in WORKFLOWS if w["name"] == name), None)
+    def _wf_names(self):
+        """下拉的选项（显示名）：内置方案 → 目录并入的 → 本次加载过的，别名覆盖原名。"""
+        names = [w["name"] for w in WORKFLOWS]
+        names += list(self._local_wfs)
+        names += [n for n in self._scanned if n not in self._local_wfs]
+        return [self._wf_alias.get(n, n) for n in names]
+
+    def _on_wf_select(self, display):
+        """下拉里选了某一项（传进来的是**显示名**）：内置方案 → 已加载图 → 目录扫描。"""
+        orig = {v: k for k, v in self._wf_alias.items()}.get(display, display)
+        wf = next((w for w in WORKFLOWS if w["name"] == orig), None)
         if wf:
             self._loaded_api = None
             self._active_wf_id = wf["id"]
+            self._cur_wf_src = None
             self.wf_nodes.configure(text="%d 节点" % len(wf["steps"]))
             self.wf_detail.show(wf, None, nodes=len(wf["steps"]))
             tag = "lw" if wf["engine"] == "minimax" else "ok"
@@ -335,18 +353,59 @@ class App:
             # 同步左导航高亮与引擎标签（工作流自带引擎），不滚动以免把刚展开的详情甩出视野
             self._select_nav(wf["engine"], scroll=False)
             return
-        data = self._local_wfs.get(name)          # v1.2.11：加载过的 .json 也能在下拉里选回来
+        data = self._local_wfs.get(orig)          # v1.2.11：加载过的 .json 也能在下拉里选回来
+        if data is None and orig in self._scanned:
+            data = self._scanned[orig]            # v1.2.14：目录并入的，选中才读（惰性）
+            if data is None:
+                data, err = rt.read_workflow(os.path.join(rt.workflows_dir(CONFIG), orig))
+                if err:
+                    self.log("[工作流] %s" % err, "err")
+                    return
+                self._scanned[orig] = data
         if data is None:
             return
-        self._use_local(name, data, log=False)
+        self._use_local(orig, data, log=False)
+        n = rt.api_node_count(data)
+        self.log("[工作流] 已选择 %s（%d 节点）" % (display, n), "lw")
+        threading.Thread(target=self._preheat_api, args=(orig, data), daemon=True).start()
+
+    def _preheat_api(self, name, data):
+        """后台预热：把 UI 图提前转成 API 格式缓存起来，推送时就不用等。
+
+        服务没起就不吵 —— 真推送时 _ready_api 会给一句明确的报错。
+        """
+        if not rt.is_ui_graph(data) or name in self._wf_api:
+            return
+        defs = self._object_info(quiet=True)
+        if defs is None:
+            return
+        api, err = rt.ui_to_api(data, defs)
+        if err:
+            self.log("[工作流] %s 暂时推不了：%s" % (name, err), "warn")
+            return
+        self._wf_api[name] = api
+        self.log("[工作流] %s 已就绪（%d 节点，可直接推送）" % (self._wf_alias.get(name, name),
+                                                          len(api)), "ok")
+
+    def _object_info(self, quiet=False):
+        """取 /object_info 节点定义（一次会话缓存一份；转换 UI 图的依据）。"""
+        if self._objinfo is not None:
+            return self._objinfo
+        if not quiet:
+            self.log("[工作流] 正在取节点定义（/object_info，几秒钟）…", "dim")
+        self._objinfo = rt.http_json(CONFIG["comfy_url"] + "/object_info", timeout=30)
+        if self._objinfo is None:
+            self.log("[工作流] 拿不到节点定义 —— ComfyUI 没在运行，UI 图暂时转换不了", "warn")
+        return self._objinfo
 
     def _use_local(self, name, data, log=True):
-        """把一份本地 API 图设为当前方案（下拉选中 / 刚加载 都走这里）。"""
+        """把一份本地图设为当前方案（下拉选中 / 刚加载 都走这里）。"""
         n = rt.api_node_count(data)
         self._loaded_api = data
         self._active_wf_id = None
+        self._cur_wf_src = name
         self.wf_nodes.configure(text="%d 节点" % n)
-        self.wf_detail.show(None, name, nodes=n)
+        self.wf_detail.show(None, name, nodes=n, alias=self._wf_alias.get(name))
         if log:
             self.log("[工作流] 已加载本地 %s（%d 节点）" % (name, n), "lw")
 
@@ -357,19 +416,66 @@ class App:
                                        filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
         if not p:
             return
-        data, err = rt.load_api(p)
+        data, err = rt.read_workflow(p)
         if err:
             self.log("[工作流] %s" % err, "err")
             return
         name = os.path.basename(p)
         self._local_wfs[name] = data
         self.wf_dd.set_values(self._wf_names())   # 先进下拉，再选中（顺序反了会被 set_values 清掉）
-        self.wf_dd.set(name)
+        self.wf_dd.set(self._wf_alias.get(name, name))
         self._use_local(name, data)
+        threading.Thread(target=self._preheat_api, args=(name, data), daemon=True).start()
 
-    def _wf_names(self):
-        """下拉的选项：内置方案在前，加载过的本地 .json 跟在后面。"""
-        return [w["name"] for w in WORKFLOWS] + list(self._local_wfs)
+    def _scan_wf_dir(self, quiet=False):
+        """扫 ComfyUI 的工作流目录，把里面的 .json 全部并入下拉（v1.2.14）。"""
+        names, err = rt.scan_workflows(CONFIG)
+        if err:
+            if not quiet:
+                self.log("[工作流] %s" % err, "warn")
+            return
+        self._scanned.update({n: None for n in names})
+        self.wf_dd.set_values(self._wf_names())
+        fresh = sum(1 for n in names if n not in self._local_wfs)
+        if not quiet and fresh:
+            self.log("[工作流] 从 ComfyUI 工作流目录并入 %d 个工作流（下拉里直接可选）" % fresh,
+                     "dim")
+        self.wf_nodes.configure(text="未选择 · 内置 %d 套 · 已并入 %d 个"
+                                % (len(WORKFLOWS), len(self._scanned)))
+
+    def _rescan_wf_dir(self):
+        """「刷新」：重扫目录 + 清节点定义缓存（ComfyUI 重启后插件可能变了）。"""
+        self._objinfo = None
+        self._wf_api.clear()
+        self._scan_wf_dir()
+        self.log("[工作流] 已重新扫描工作流目录", "dim")
+
+    def _wf_alias_edit(self):
+        """「备注」：给当前选中的本地工作流起个好记的名字（落盘到配置文件）。"""
+        name = self._cur_wf_src
+        if not name:
+            return
+        new = simpledialog.askstring(
+            "工作流备注名", "给「%s」起个好记的名字（留空清除备注）：" % name,
+            initialvalue=self._wf_alias.get(name, ""), parent=self.root)
+        if new is None:
+            return                                  # 取消：什么都不动
+        new = new.strip()
+        if new:
+            self._wf_alias[name] = new
+        else:
+            self._wf_alias.pop(name, None)
+        err = rt.save_config(_cfg_path, {"wf_alias": self._wf_alias})
+        if err:
+            self.log("[工作流] 备注没存成：%s" % err, "err")
+            return
+        CONFIG["wf_alias"] = self._wf_alias
+        self.wf_dd.set_values(self._wf_names())
+        if self._loaded_api is not None:
+            self.wf_dd.set(self._wf_alias.get(name, name))
+            self.wf_detail.show(None, name, nodes=rt.api_node_count(self._loaded_api),
+                                alias=self._wf_alias.get(name))
+        self.log("[工作流] 备注已保存：%s → %s" % (name, new or "（已清除）"), "ok")
 
     def _push_wf(self, to_queue):
         """把当前方案推给 ComfyUI。
@@ -398,16 +504,41 @@ class App:
         else:
             self.log("[工作流] %s失败：%s" % (verb, err), "err")
 
+    def _ready_api(self, data):
+        """把当前选中的图备成可推送的 API 格式。
+
+        API 图原样深拷贝；UI 格式（ComfyUI 里存的都是）先转换 —— 转换要
+        /object_info 的节点定义，取回后缓存在 self._objinfo，转换结果缓存在
+        self._wf_api，同一条工作流只转一回。返回 (图 or None, 原因)。
+        """
+        if not rt.is_ui_graph(data):
+            return copy.deepcopy(data), ""
+        key = self._cur_wf_src
+        if key and key in self._wf_api:
+            return copy.deepcopy(self._wf_api[key]), ""
+        defs = self._object_info()
+        if defs is None:
+            return None, "拿不到节点定义（ComfyUI 没在运行？转换 UI 图需要它）"
+        api, err = rt.ui_to_api(data, defs)
+        if err:
+            return None, err
+        if key:
+            self._wf_api[key] = api
+        self.log("[工作流] UI 图已转成 API 格式（%d 节点）" % len(api), "dim")
+        return copy.deepcopy(api), ""
+
     def _api_for(self, wf, video):
         """备好这次要提交的图，返回 (图 or None, 说明 / 取不到的原因)。
 
         两条来源，都先把图里的素材换成界面上选的输入（用户在本程序里选了输入，
         意思就是要用它 —— 尤其本地图常常带着作者机器上的硬编码示例路径）：
-          * 用户「加载 .json」过的图优先（那是显式选择）；
+          * 用户「加载 .json」/ 目录并入的图优先（那是显式选择）；UI 格式的先转换；
           * 否则用内置方案绑定的图，顺带按方案覆盖参数、按素材音轨挑有声/无音轨版。
         """
         if self._loaded_api is not None:
-            api, why = copy.deepcopy(self._loaded_api), ""
+            api, why = self._ready_api(self._loaded_api)
+            if api is None:
+                return None, why
         else:
             if wf is None:
                 return None, "还没选方案；先在下拉里选一套，或点「加载 .json」"
@@ -808,224 +939,6 @@ class App:
         else:
             self.pbar.set(0)
             self.pct_lab.configure(text="空闲")
-
-    # ================================================================ 服务
-    def _comfy_env(self):
-        return rt.comfy_env(CONFIG)      # 拼装在 运行时.py：ffmpeg 前置 PATH + UTF-8 文本 IO
-
-    def comfy_alive(self):
-        """本机 ComfyUI 是否在跑（绕开系统代理，见 运行时.http_json）。"""
-        return rt.http_json(CONFIG["comfy_url"] + "/system_stats") is not None
-
-    def _primary_service(self):
-        if self._probe_state["alive"]:
-            self.svc_restart()
-        else:
-            self.svc_start()
-
-    def svc_start(self):
-        if self._svc_starting:
-            self.log("[服务] ComfyUI 正在启动中，请稍候…")
-            return
-        if self.svc_proc is not None and self.svc_proc.poll() is None:
-            self.log("[服务] ComfyUI 已在本程序运行")
-            return
-        if self.comfy_alive():
-            self.log("[服务] ComfyUI 已在运行，不用重复启动")
-            return
-        if not os.path.exists(CONFIG["comfy_py"]):
-            messagebox.showerror("找不到 ComfyUI", CONFIG["comfy_py"])
-            return
-        self._svc_starting = True
-        self.btn_primary.set_state("disabled")
-        self.log("[服务] 正在启动 ComfyUI（首次加载约 15~60 秒）…", "hi")
-        try:
-            self.svc_proc = subprocess.Popen(
-                [CONFIG["comfy_py"], "-u", "main.py",
-                 "--disable-pinned-memory", "--disable-async-offload", "--reserve-vram", "1"],
-                cwd=CONFIG["comfy_dir"], env=self._comfy_env(),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
-                creationflags=NO_WINDOW)
-        except Exception as e:
-            self._svc_starting = False
-            self.btn_primary.set_state("normal")
-            messagebox.showerror("启动失败", repr(e))
-            return
-        threading.Thread(target=self._svc_reader, daemon=True).start()
-        threading.Thread(target=self._svc_wait_ready, daemon=True).start()
-
-    def _restart_worker(self):
-        p = self.svc_proc
-        try:
-            p.terminate()
-        except Exception as e:
-            self.log("[服务] 停止失败：%r" % e, "err")
-        for _ in range(40):                       # 最多等 20 秒退化
-            if self._closing:
-                return
-            if p.poll() is not None and not self.comfy_alive():
-                break
-            time.sleep(0.5)
-        if not self._closing:
-            self.uiqueue.put(self.svc_start)
-
-    def _svc_reader(self):
-        p = self.svc_proc
-        try:
-            for line in p.stdout:
-                self.log("[ComfyUI] " + line.rstrip())
-        except Exception:
-            pass          # 管道被断（进程被杀 / 句柄失效）：下面 p.wait() 会把 rc 报出来，这里不必再吵
-        rc = p.wait()
-        self._svc_starting = False          # 进程退出即解除启动中锁（按钮态由探测统一刷新）
-        if not self._closing:
-            self.log("[服务] ComfyUI 进程退出，rc=%s" % rc)
-
-    def _svc_wait_ready(self):
-        for _ in range(100):                     # 最多 5 分钟
-            if self._closing:
-                return
-            if self.comfy_alive():
-                self._svc_starting = False
-                self.log("[服务] ✅ ComfyUI 已就绪：%s" % CONFIG["comfy_url"], "ok")
-                webbrowser.open(CONFIG["comfy_url"])   # 非 Tk 调用，后台线程可直接开浏览器
-                return
-            if self.svc_proc and self.svc_proc.poll() is not None:
-                self._svc_starting = False
-                return
-            time.sleep(3)
-        self._svc_starting = False
-        self.log("[服务] ⚠️ 5 分钟内未就绪，请看日志排查", "warn")
-
-    def svc_stop(self):
-        own = self.svc_proc is not None and self.svc_proc.poll() is None
-        if own:
-            self.log("[服务] 正在停止 ComfyUI…", "hi")
-            try:
-                self.svc_proc.terminate()
-            except Exception as e:
-                self.log("[服务] 停止失败：%r" % e, "err")
-            return
-        if not self.comfy_alive():
-            self.log("[服务] ComfyUI 没在运行")
-            return
-        # 不是自己拉起的也照样能停（v1.2.13）：按命令行找到它的进程再结束。
-        # PowerShell 查询要 1~3 秒，进后台线程，别把界面卡住。
-        self.log("[服务] 服务不是本程序拉起的，正在定位它的进程…", "hi")
-        threading.Thread(target=lambda: rt.stop_external(CONFIG, self.log),
-                         daemon=True).start()
-
-    def svc_restart(self):
-        if self._svc_starting:
-            self.log("[服务] 正在启动中，稍候再重启")
-            return
-        own = self.svc_proc is not None and self.svc_proc.poll() is None
-        if own:
-            self.log("[服务] 重启中：先停后起…", "hi")
-            threading.Thread(target=self._restart_worker, daemon=True).start()
-            return
-        if not self.comfy_alive():
-            self.log("[服务] ComfyUI 没在运行，直接启动…", "dim")
-            self.svc_start()
-            return
-        self.log("[服务] 服务不是本程序拉起的，先停外部进程再启动…", "hi")
-        threading.Thread(target=self._restart_ext_worker, daemon=True).start()
-
-    def _restart_ext_worker(self):
-        """外部拉起的服务也能重启（v1.2.13）：结束它的进程，等退出后走正常启动。"""
-        rt.stop_external(CONFIG, self.log)
-        for _ in range(40):                       # 最多等 20 秒，等外部服务真退出
-            if self._closing:
-                return
-            if not self.comfy_alive():
-                break
-            time.sleep(0.5)
-        if not self._closing:
-            self.uiqueue.put(self.svc_start)
-
-    def svc_stop_queue(self):
-        """停掉 ComfyUI 里正在跑的 + 排队中的任务。
-
-        两个接口各管一半（ComfyUI 官方语义）：/interrupt 打断当前执行、
-        /queue{"clear":true} 清掉还没轮到的。先读一次 /queue 是为了把"停掉几个"
-        说清楚 —— 队列本来就空时直接报"已停止"会让人以为程序在自说自话。
-
-        与「停止服务」的区别：这个只走 HTTP，不碰进程；「停止服务」是结束
-        ComfyUI 进程本身（自己拉起的走句柄、外部的按命令行找，v1.2.13 起都能停）。
-        """
-        if not self.comfy_alive():
-            self.log("[队列] ComfyUI 没在运行，没有可停的任务", "warn")
-            return
-        q = rt.http_json(CONFIG["comfy_url"] + "/queue") or {}
-        running = len(q.get("queue_running") or [])
-        pending = len(q.get("queue_pending") or [])
-        if not running and not pending:
-            self.log("[队列] 当前没有正在跑或排队中的任务", "warn")
-            return
-        err = rt.http_post_json(CONFIG["comfy_url"] + "/interrupt", {})
-        if err:
-            self.log("[队列] 中断当前任务失败：%s" % err, "err")
-            return
-        err = rt.http_post_json(CONFIG["comfy_url"] + "/queue", {"clear": True})
-        if err:
-            self.log("[队列] 已中断当前任务，但清空排队失败：%s" % err, "err")
-            return
-        self.log("[队列] 已停止 %d 个执行中 + %d 个排队中的任务" % (running, pending), "ok")
-
-    def open_web(self):
-        if not self.comfy_alive():
-            self.svc_start()
-            return                                  # svc_start 就绪后会自动开网页
-        webbrowser.open(CONFIG["comfy_url"])
-
-    # ================================================================ 批量任务
-    def _task_busy(self):
-        return self.task_proc is not None and self.task_proc.poll() is None
-
-    def _run_ps(self, title, script, arglist):
-        if self._task_busy():
-            messagebox.showwarning("有任务在跑", "当前任务：%s\n等它结束再开新的" % self.task_name)
-            return
-        args = " ".join(a if a.startswith("-") else ps_quote(a) for a in arglist)
-        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-               "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-               "$env:PYTHONIOENCODING='utf-8';"
-               "& %s %s; $rc = if ($?) { 0 } else { 1 }; exit $rc" % (ps_quote(script), args)]
-        self.log("")
-        self.log("═" * 60, "dim")
-        self.log("▶ %s" % title, "hi")
-        self.log("  %s" % " ".join(cmd[4:]), "dim")
-        try:
-            self.task_proc = subprocess.Popen(
-                cmd, cwd=CONFIG["deploy_root"], env=self._comfy_env(),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
-                creationflags=NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
-        except Exception as e:
-            messagebox.showerror("启动失败", repr(e))
-            return
-        self.task_name = title
-        self._set_task_ui(True, title)
-        threading.Thread(target=self._task_reader, args=(title,), daemon=True).start()
-
-    def _task_reader(self, title):
-        p = self.task_proc
-        t0 = time.time()
-        try:
-            for line in p.stdout:
-                self.log("  " + line.rstrip())
-        except Exception as e:
-            self.log("[读取日志异常] %r" % e, "err")
-        rc = p.wait()
-        el = time.time() - t0
-        self.log("■ %s 结束：rc=%s，用时 %.0f 分 %.0f 秒" % (title, rc, el // 60, el % 60),
-                 "ok" if rc == 0 else "err")
-        if rc == 0:
-            self.log("  输出目录：%s" % CONFIG["output_dir"], "ok")
-        self.task_proc = None
-        self.task_name = ""
-        self.uiqueue.put(lambda: self._set_task_ui(False))
 
     def _get_input(self, name):
         p, err = rt.check_input(self.in_var.get(), name)
