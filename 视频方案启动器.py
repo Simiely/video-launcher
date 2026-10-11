@@ -38,7 +38,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.15"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.16"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -158,6 +158,10 @@ class App(服务面板.服务面板):
         # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
         self._select_nav("flashvsr", scroll=False)
         self._scan_wf_dir()             # v1.2.14：把 ComfyUI 里存的工作流并入下拉
+        # v1.2.16：启动时把内置方案同步进 ComfyUI 工作流目录，相当于"仅加载"——
+        # 用户在 ComfyUI 网页里 工作流 → 打开（API 格式）→ video-launcher/… 即可加载到画布。
+        n, msg = rt.sync_workflows_to_comfy(CONFIG)
+        self.log("[工作流] %s" % msg, "ok" if n else "dim")
         self._drain_log()
         self._probe_loop()
 

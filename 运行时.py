@@ -1046,6 +1046,56 @@ def scan_workflows(cfg):
     return names, ""
 
 
+def sync_workflows_to_comfy(cfg):
+    """启动时把内置方案的 API 图同步进 ComfyUI 的工作流目录（video-launcher/ 子目录）。
+
+    这样用户在 ComfyUI 网页里 工作流 → 打开（API 格式）→ video-launcher/… 就能把图加载到
+    画布，自行设置首帧图/参数后点 Queue —— 相当于"仅加载"，且一次到位覆盖全部内置方案，
+    不用逐个点按钮。
+
+    只做文件拷贝，不校验、不转换、不要求 ComfyUI 在运行。返回 (写入份数, 说明串)。
+    """
+    wd = workflows_dir(cfg)
+    if not os.path.isdir(wd):
+        return 0, f"ComfyUI 工作流目录不存在：{wd}（跳过同步）"
+    target = os.path.join(wd, "video-launcher")
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as e:
+        return 0, f"建同步目录失败：{e!r}"
+    root = str((cfg or {}).get("deploy_root", "") or "")
+    # 收集去重后的 API 图相对路径（FLASHVSR 两方案共用同一份 api 字典，别写重）
+    seen = {}
+    for wf in WORKFLOWS:
+        src = (wf or {}).get("api")
+        if not src:
+            continue
+        rels = (src.values() if isinstance(src, dict) else [src])
+        for rel in rels:
+            seen.setdefault(rel, wf.get("name", ""))
+    written, skipped = 0, []
+    for rel in sorted(seen):
+        full = os.path.join(root, rel)
+        data, err = load_api(full)
+        if err:
+            skipped.append(rel)          # 源图缺失/坏：记下来，不阻断其余
+            continue
+        out = os.path.join(target, os.path.basename(rel))
+        try:
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            written += 1
+        except OSError:
+            skipped.append(rel)          # 写不进：记下来，不阻断其余
+    if written or skipped:
+        msg = f"已同步 {written} 份到 ComfyUI：{target}"
+        if skipped:
+            names = ", ".join(os.path.basename(s) for s in skipped)
+            msg += f"（{len(skipped)} 份跳过：{names}）"
+        return written, msg
+    return 0, "没有可同步的内置工作流（deploy_root 下找不到 API 图）"
+
+
 # ================================================================ 内置工作流清单
 # 纯数据（界面上的展示字段 + 节点步骤），不含颜色等界面令牌 —— 所以留在这里，
 # 而不是跟配色一起放在主文件里占地方。
