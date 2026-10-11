@@ -2,6 +2,51 @@
 
 本文件记录本项目的版本变更。格式：版本号 + 日期 + 变更分类。
 
+## v1.2.17 · 2026-10-12
+
+**「加载到画布」一键直达：经桥接扩展把工作流载入 ComfyUI 画布（只加载、不执行）。**
+
+用户实测反馈 v1.2.16"没成功"。逐项查证本机安装（前端 `comfyui_frontend_package` 1.53.6 +
+server.py）后定案根因：**同步过去的 6 份全是 API 格式，而 ComfyUI 画布只认 UI 格式**；
+且官方**没有**任何"远程载入画布"的接口（`/prompt` 是执行；`?workflow=` URL 参数是未实现的
+feature request #9858；前端源码里的 "API Format" 全是导出功能）。社区成熟做法（如
+Comfy-Cozy 的 push_workflow_to_canvas）是装一个极小的桥接扩展，遂采用。
+
+### 新增
+- **桥接扩展 `video-launcher-bridge`**（源码常量在 `桥接资源.py`，约 60 行、零依赖）：
+  后端挂 `GET /video_launcher/ping`（存活探测）与 `GET /video_launcher/pending`
+  （取走待加载请求，取走即删）两个只读路由；前端 `web/js/bridge.js` 每 0.8s 轮询，
+  收到请求即 `app.loadGraphData()`。不注册节点、不执行任何图逻辑。
+- **`运行时.install_bridge(cfg)`**：把扩展写进 `comfy_dir/custom_nodes/`（幂等，内容一致
+  就不动）；启动 `__init__` 自动调用，装/更新时日志提示"重启 ComfyUI 一次生效"。
+- **`运行时.load_to_comfy(cfg, name, wf_id, data)`**：写 `pending.json`（原子替换）+
+  拉起浏览器；只加载不执行。
+- **`WF_UI_SOURCES` 映射**（宁缺毋滥）：五套内置方案绑 ComfyUI 里的 UI 原件；
+  `sv_max`（2160 是补绑参数、无 UI 原件）显式为 None，按钮给诚实提示而不是猜图。
+- **`build_i2v_ui`**：MiniMax T2V 画布是 T2V/I2V 通用（`first_frame` 没接线 = 文生视频），
+  I2V 加载时临时构造——深拷贝画布、加一个 LoadImage 接进子图实例的 `first_frame`，
+  原件不动。
+- **ui_kit.WorkflowDetail**：动作按钮改**两行网格**（推送/入队 一行，加载到画布+备注 一行；
+  AGENTS.md 规矩：平分宽不够就换行排布），新增 `on_load` 回调。
+- **`运行时.cleanup_synced_api(cfg)`**：清掉 v1.2.16 误同步的 API 格式文件
+  （只动我们自己建的 `video-launcher/` 子目录，混入外来文件则整目录保留）。
+- 新数据模块 `桥接资源.py`（运行时.py 逻辑行 974→931；>1000 必拆）。
+
+### 移除
+- `运行时.sync_workflows_to_comfy`（v1.2.16 的 API 格式同步，画布打不开）及其启动调用。
+
+### 设计要点
+- `bridge_ready` 必须**核对 ping 应答内容**：`http_json` 任何失败（含 404）都返回 None，
+  只看"没抛异常"会把 ComfyUI 的 404 当成桥已生效。
+- 扫描/加载进来的本地图直接用原件（须 UI 格式，API 格式明确提示"画布打不开，要执行请推送"）。
+- 桥未生效时（扩展装好但 ComfyUI 未重启）按钮给明确指引，不发请求。
+
+### 验证
+行为 238/238（v1.2.16 段改写为 v1.2.17 等价断言：安装幂等 / 内容一致 / 404 不算通 /
+I2V 构造与原件不动 / 映射缺省 / 清理保外）；渲染（shot_ui）四按钮两行 `[2,2]` 全等不裁字、
+工作流卡完整；exe 13,342,967 字节，verify_exe 按精确标题 `视频方案启动器 v1.2.17` 命中、
+watch_flash 全程 0 控制台窗口。
+
 ## v1.2.16 · 2026-10-11
 
 **启动即把内置方案同步进 ComfyUI 工作流目录（相当于"仅加载"）。**

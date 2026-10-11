@@ -702,17 +702,20 @@ class WorkflowDetail(tk.Frame):
       * nodes     = 节点数（内置方案传 len(steps)，本地传解析出的节点数）
       * on_change = 内容变了（高度跟着变）时回调，供业务层重排上排高度
       * on_push   = 点「推送 / 加入队列」时回调，参数 to_queue（True = 入队）
+      * on_load   = 点「加载到画布」时回调（v1.2.17：经桥接扩展载入 ComfyUI 画布，不执行）
       * on_alias  = 点「备注」时回调（v1.2.14，只对本地工作流显示；内置方案名是
                     精修过的文案，不允许改）
       * alias     = 备注名：显示名换成它，原名照旧出现在"已从本地加载"一行里
     """
 
     def __init__(self, master, *, engines, outer=CARD, nodes=None,
-                 on_change=None, on_push=None, on_alias=None, wf=None, local_name=None):
+                 on_change=None, on_push=None, on_load=None, on_alias=None,
+                 wf=None, local_name=None):
         super().__init__(master, bg=outer)
         self._engines = engines or {}
         self.on_change = on_change
         self.on_push = on_push
+        self.on_load = on_load
         self.on_alias = on_alias
         self.nodes = nodes
         self.show(wf, local_name)
@@ -784,26 +787,39 @@ class WorkflowDetail(tk.Frame):
             tk.Label(cell, text=lab + " ", bg=_INNER, fg=TXT2, font=f(8)).pack(side="left")
             tk.Label(cell, text=val, bg=_INNER, fg=TXT, font=f(8, True)).pack(side="left")
 
+        # 动作按钮两行网格（v1.2.17：加「加载到画布」后 4 个按钮横排放不下——
+        # AGENTS.md 规矩：平分宽不够就换行排布）。网格让每个按钮都吃满半行宽。
         acts = tk.Frame(pad, bg=_INNER)
         acts.pack(fill="x", pady=(S(10), 0))
+        acts.columnconfigure(0, weight=1)
+        acts.columnconfigure(1, weight=1)
         RButton(acts, text="推送到 ComfyUI", command=lambda: self._push(False),
                 fill=TEAL, fg=DARKTX, border=None, outer=_INNER, font=f(9), pady=6,
-                stretch=True).pack(side="left", fill="x", expand=True)
+                stretch=True).grid(row=0, column=0, sticky="ew", padx=(0, S(4)))
         RButton(acts, text="加入队列", command=lambda: self._push(True),
                 fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
-                font=f(9), pady=6, stretch=True).pack(side="left", fill="x", expand=True,
-                                                     padx=(S(8), 0))
+                font=f(9), pady=6, stretch=True).grid(row=0, column=1, sticky="ew")
+        load_btn = RButton(acts, text="加载到画布", command=self._load,
+                           fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
+                           font=f(9), pady=6, stretch=True)
         if local_name and self.on_alias:
-            # 「备注」（v1.2.14）：挤同一行（三个 stretch 平分），不给卡片加一行高度
+            # 「备注」（v1.2.14）：和「加载到画布」挤第二行，不给卡片加一行高度
+            load_btn.grid(row=1, column=0, sticky="ew", padx=(0, S(4)), pady=(S(6), 0))
             RButton(acts, text="备注", command=self.on_alias,
                     fill="transparent", fg=TXT, border=BORDER, outer=_INNER,
-                    font=f(9), pady=6, stretch=True).pack(side="left", fill="x",
-                                                          expand=True, padx=(S(8), 0))
+                    font=f(9), pady=6, stretch=True).grid(row=1, column=1, sticky="ew",
+                                                          pady=(S(6), 0))
+        else:
+            load_btn.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(S(6), 0))
         self._changed()
 
     def _push(self, to_queue):
         if self.on_push:
             self.on_push(to_queue)
+
+    def _load(self):
+        if self.on_load:
+            self.on_load()
 
     def _changed(self):
         if self.on_change:

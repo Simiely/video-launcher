@@ -22,6 +22,9 @@ import traceback
 import urllib.request
 import webbrowser
 
+from 桥接资源 import (BRIDGE_INIT, BRIDGE_JS, WF_UI_SOURCES,      # 纯数据模块
+                      build_i2v_ui)
+
 # ================================================================ 子进程：别弹黑窗
 # 关键：本程序打包成 exe 时是「无控制台窗口」（console=False）的 GUI 程序。
 # 这种程序里 spawn 控制台子进程（powershell / nvidia-smi / ComfyUI 的 python）时，
@@ -1046,54 +1049,135 @@ def scan_workflows(cfg):
     return names, ""
 
 
-def sync_workflows_to_comfy(cfg):
-    """启动时把内置方案的 API 图同步进 ComfyUI 的工作流目录（video-launcher/ 子目录）。
+# ---------------- 桥接扩展（v1.2.17）：一键把工作流载入 ComfyUI 画布 ----------------
+# 官方没有任何"远程载入画布"的接口（/prompt 是执行；URL 参数 ?workflow= 未实现；
+# 前端 1.53.6 也打不开 API 格式图——已对本机安装逐一查证）。社区成熟做法就是装一个
+# 极小的桥接扩展：后端挂两个只读路由，前端轮询取走请求后 app.loadGraphData()。
+# 扩展源码常量在 桥接资源.py（纯数据模块；因运行时.py 逻辑行预算拆出）。
 
-    这样用户在 ComfyUI 网页里 工作流 → 打开（API 格式）→ video-launcher/… 就能把图加载到
-    画布，自行设置首帧图/参数后点 Queue —— 相当于"仅加载"，且一次到位覆盖全部内置方案，
-    不用逐个点按钮。
+BRIDGE_NAME = "video-launcher-bridge"
 
-    只做文件拷贝，不校验、不转换、不要求 ComfyUI 在运行。返回 (写入份数, 说明串)。
+
+def bridge_dir(cfg):
+    """桥接扩展的安装位置：comfy_dir/custom_nodes/video-launcher-bridge。"""
+    return os.path.join(str((cfg or {}).get("comfy_dir", "") or ""),
+                        "custom_nodes", BRIDGE_NAME)
+
+
+def install_bridge(cfg):
+    """把桥接扩展装进 ComfyUI 的 custom_nodes（幂等：内容一致就不动）。
+
+    返回 (动作, 说明)：动作 ∈ {"ok", "updated", "fail"}；updated = 需要重启 ComfyUI 才生效。
     """
-    wd = workflows_dir(cfg)
-    if not os.path.isdir(wd):
-        return 0, f"ComfyUI 工作流目录不存在：{wd}（跳过同步）"
-    target = os.path.join(wd, "video-launcher")
-    try:
-        os.makedirs(target, exist_ok=True)
-    except OSError as e:
-        return 0, f"建同步目录失败：{e!r}"
-    root = str((cfg or {}).get("deploy_root", "") or "")
-    # 收集去重后的 API 图相对路径（FLASHVSR 两方案共用同一份 api 字典，别写重）
-    seen = {}
-    for wf in WORKFLOWS:
-        src = (wf or {}).get("api")
-        if not src:
-            continue
-        rels = (src.values() if isinstance(src, dict) else [src])
-        for rel in rels:
-            seen.setdefault(rel, wf.get("name", ""))
-    written, skipped = 0, []
-    for rel in sorted(seen):
-        full = os.path.join(root, rel)
-        data, err = load_api(full)
-        if err:
-            skipped.append(rel)          # 源图缺失/坏：记下来，不阻断其余
-            continue
-        out = os.path.join(target, os.path.basename(rel))
+    root = bridge_dir(cfg)
+    files = [("__init__.py", BRIDGE_INIT), (os.path.join("web", "js", "bridge.js"), BRIDGE_JS)]
+    changed = []
+    for rel, text in files:
+        out = os.path.join(root, rel)
         try:
-            with open(out, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, ensure_ascii=False, indent=2)
-            written += 1
+            with open(out, "r", encoding="utf-8") as fh:
+                cur = fh.read()
         except OSError:
-            skipped.append(rel)          # 写不进：记下来，不阻断其余
-    if written or skipped:
-        msg = f"已同步 {written} 份到 ComfyUI：{target}"
-        if skipped:
-            names = ", ".join(os.path.basename(s) for s in skipped)
-            msg += f"（{len(skipped)} 份跳过：{names}）"
-        return written, msg
-    return 0, "没有可同步的内置工作流（deploy_root 下找不到 API 图）"
+            cur = None
+        if cur == text:
+            continue
+        try:
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            changed.append(rel.replace("\\", "/"))
+        except OSError as e:
+            return "fail", f"桥接扩展写入失败 {rel}：{e!r}（检查 ComfyUI 目录权限）"
+    if changed:
+        return "updated", f"桥接扩展已安装/更新（{', '.join(changed)}）；重启 ComfyUI 一次后生效"
+    return "ok", "桥接扩展已是最新（无需重启 ComfyUI）"
+
+
+def bridge_ready(cfg):
+    """桥是否已生效（扩展装好后要 ComfyUI 重启过才会挂上路由）。返回 (是否, 说明)。
+
+    注意 http_json 任何失败（连接不上 / 404 / 不是 JSON）都返回 None，所以必须
+    核对 ping 的应答内容，不能只看"没抛异常"。
+    """
+    base = str((cfg or {}).get("comfy_url", "") or "").rstrip("/")
+    if not base:
+        return False, "comfy_url 未配置"
+    data = http_json(base + "/video_launcher/ping", timeout=2)
+    if isinstance(data, dict) and data.get("ok") and data.get("name") == BRIDGE_NAME:
+        return True, ""
+    return False, ("桥还没生效（扩展已装好，但 ComfyUI 需重启一次才挂上路由；"
+                   "ping 没通过）")
+
+
+def cleanup_synced_api(cfg):
+    """清掉 v1.2.16 误同步进 ComfyUI 工作流目录的 API 格式图（画布打不开，纯垃圾）。
+
+    只动我们自己建的 video-launcher/ 子目录，且只在里面没有外来文件时整目录删除。
+    返回 (是否清理, 说明)。
+    """
+    target = os.path.join(workflows_dir(cfg), "video-launcher")
+    if not os.path.isdir(target):
+        return False, ""
+    try:
+        entries = sorted(os.listdir(target))
+    except OSError as e:
+        return False, f"旧同步目录读不了，先留着：{e!r}"
+    ours = {"FlashVSR-12G-无音轨素材.json", "FlashVSR-12G-有声素材.json",
+            "MiniMax-H3-I2V.json", "MiniMax-H3-T2V.json",
+            "SeedVR2-12G-1080p.json", "SeedVR2-极致-2160.json"}
+    if not set(entries) <= ours:
+        return False, ""
+    try:
+        shutil.rmtree(target)
+        return True, f"已清理 v1.2.16 误同步的 API 格式文件：{target}"
+    except OSError as e:
+        return False, f"旧同步目录删不掉，先留着：{e!r}"
+
+
+
+def load_to_comfy(cfg, name, wf_id, data, open_browser=True):
+    """把工作流经桥接扩展载入 ComfyUI 画布（只加载、不执行）。
+
+    data 传已确认是 UI 格式的图（扫描 / 加载进来的本地件）；传 None 时按 wf_id 查
+    WF_UI_SOURCES 找画布版 UI 原件。返回 (是否成功, 说明)。
+    """
+    ok, why = bridge_ready(cfg)
+    if not ok:
+        return False, f"「{name}」{why}"
+    ui = data
+    if ui is None:
+        src = WF_UI_SOURCES.get(wf_id)
+        if not src:
+            return False, (f"「{name}」还没有画布版 UI 原件，暂不能加载到画布"
+                           f"（可在 ComfyUI 里把它调好后另存一份，或直接推送执行）")
+        full = os.path.join(workflows_dir(cfg), src)
+        ui, err = read_workflow(full)
+        if err:
+            return False, f"「{name}」的画布版原件读不了：{err}"
+        if not is_ui_graph(ui):
+            return False, f"「{name}」的画布版原件不是 UI 格式：{full}"
+        if wf_id == "mm_i2v":
+            ui, err = build_i2v_ui(ui)
+            if err:
+                return False, f"「{name}」画布版构造失败：{err}"
+    payload = {"name": name, "workflow": ui}
+    req = os.path.join(bridge_dir(cfg), "pending.json")
+    try:
+        os.makedirs(os.path.dirname(req), exist_ok=True)
+        tmp = req + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, req)
+    except OSError as e:
+        return False, f"加载请求写不进桥接扩展：{e!r}"
+    hint = ""
+    if open_browser:
+        try:
+            os.startfile(str((cfg or {}).get("comfy_url", "") or "").rstrip("/") + "/")
+        except OSError as e:
+            hint = f"（浏览器没拉起来：{e!r}；请手动打开 ComfyUI 页面）"
+    return True, (f"已发送「{name}」→ ComfyUI 画布（页面会在 1 秒内自动载入，"
+                  f"只加载不执行）{hint}")
 
 
 # ================================================================ 内置工作流清单

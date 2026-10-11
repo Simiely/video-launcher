@@ -38,7 +38,7 @@ from ui_kit import (
 # ---------------------------------------------------------------- 配置
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-APP_VER = "v1.2.16"                                 # 窗口标题与文档基线共用；发版必更
+APP_VER = "v1.2.17"                                 # 窗口标题与文档基线共用；发版必更
 CONFIG = {
     "comfy_dir":    r"C:\AI\ComfyUI",
     "comfy_py":     r"C:\AI\ComfyUI\.venv\Scripts\python.exe",
@@ -158,10 +158,13 @@ class App(服务面板.服务面板):
         # 启动时只选中默认引擎、不滚动：让中栏停在引擎卡首屏
         self._select_nav("flashvsr", scroll=False)
         self._scan_wf_dir()             # v1.2.14：把 ComfyUI 里存的工作流并入下拉
-        # v1.2.16：启动时把内置方案同步进 ComfyUI 工作流目录，相当于"仅加载"——
-        # 用户在 ComfyUI 网页里 工作流 → 打开（API 格式）→ video-launcher/… 即可加载到画布。
-        n, msg = rt.sync_workflows_to_comfy(CONFIG)
-        self.log("[工作流] %s" % msg, "ok" if n else "dim")
+        # v1.2.17：装桥接扩展（幂等）——「加载到画布」一键直达；顺带清掉 v1.2.16
+        # 误同步的 API 格式文件（画布打不开）。扩展刚装/更新时需重启 ComfyUI 一次。
+        act, msg = rt.install_bridge(CONFIG)
+        self.log("[工作流] %s" % msg, "ok" if act != "fail" else "warn")
+        cleaned, cmsg = rt.cleanup_synced_api(CONFIG)
+        if cleaned:
+            self.log("[工作流] %s" % cmsg, "dim")
         self._drain_log()
         self._probe_loop()
 
@@ -332,6 +335,7 @@ class App(服务面板.服务面板):
         self.wf_detail = ui_kit.WorkflowDetail(b, engines=ENG, outer=CARD,
                                                on_change=self._schedule_top_sync,
                                                on_push=self._push_wf,
+                                               on_load=self._load_canvas,
                                                on_alias=self._wf_alias_edit)
 
     # ---- 工作流的选 / 载 / 推 ----
@@ -507,6 +511,38 @@ class App(服务面板.服务面板):
             self.log("[工作流] 已%s「%s」→ ComfyUI" % (verb, name), "lw" if to_queue else "ok")
         else:
             self.log("[工作流] %s失败：%s" % (verb, err), "err")
+
+    def _load_canvas(self):
+        """「加载到画布」（v1.2.17）：经桥接扩展把所选工作流载入 ComfyUI 画布（不执行）。
+
+        本地/扫描进来的图直接用（须是 UI 格式，画布只认这个）；内置方案按映射找
+        画布版 UI 原件（见 运行时.WF_UI_SOURCES）。
+        """
+        wf = next((w for w in WORKFLOWS if w["id"] == self._active_wf_id), None)
+        name, data = None, None
+        if wf is not None:
+            name = self._wf_alias.get(wf["name"], wf["name"])
+        else:
+            disp = self.wf_dd.value or ""
+            name = {v: k for k, v in self._wf_alias.items()}.get(disp, disp)
+            data = self._local_wfs.get(name)
+            if data is None and name in self._scanned:
+                data = self._scanned[name]
+                if data is None:
+                    data, err = rt.read_workflow(os.path.join(rt.workflows_dir(CONFIG), name))
+                    if err:
+                        self.log("[工作流] %s" % err, "err")
+                        return
+                    self._scanned[name] = data
+        if name is None or (wf is None and data is None):
+            self.log("[工作流] 先在上方下拉里选一套工作流，再加载到画布", "warn")
+            return
+        if wf is None and not rt.is_ui_graph(data):
+            self.log("[工作流] 「%s」是 API 格式，画布打不开（画布只认 UI 格式）；要执行请直接推送"
+                     % name, "warn")
+            return
+        ok, msg = rt.load_to_comfy(CONFIG, name, wf["id"] if wf else None, data)
+        self.log("[工作流] %s" % msg, "ok" if ok else "warn")
 
     def _ready_api(self, data):
         """把当前选中的图备成可推送的 API 格式。
