@@ -50,6 +50,19 @@
 - **自绘控件的颜色参数要归一化**：Tk 不认 CSS 的 `"transparent"`，写进 `outline` 会抛 `unknown color name`。
 - **一行里固定元素先 `pack`**：顶栏「按钮组 + 弹性 URL」必须先给按钮组分配空间，否则窄窗口会把按钮挤出卡片。
 - **像素走 `S()`、字号走 `f()`**：`ui_kit.S()` 按 DPI 缩放像素，字号用磅值交给 Tk 缩放，两者才同比例。
+- **打包必须带 `TCL_LIBRARY`/`TK_LIBRARY`，否则会静默打出没有 tkinter 的坏 exe**（v1.2.18 踩到，**能省一次假发版**）：本机构建解释器是 NuGet 版 `C:\Users\2504\AppData\Local\Python\pythoncore-3.14-64`，它的 tcl/tk 布局让 `init.tcl` 找不到 —— 裸跑 `import tkinter` 成功（`TkVersion` 报得出来），但一调 `tkinter.Tk()` 就抛
+  `_tkinter.TclError: Can't find a usable init.tcl in the following directories:`。
+  而 PyInstaller 的 `hook-tkinter.py`（pre_find_module_path）判"tkinter 是否可用"靠的就是**隔离子进程里跑一次 `tkinter.Tk()`**（`utils/hooks/tcl_tk.py::_check_tkinter_fully_usable`）→ 失败即打印
+  `WARNING: tkinter installation is broken. It will be excluded from the application`，**然后照常构建成功**（exit 0，不报错），产出的 exe 一启动就 `ModuleNotFoundError: No module named 'tkinter'`。
+  两个特征一眼可辨：**体积从 ~13.28 MB 掉到 ~10.19 MB**，且构建日志里没有 `hook-_tkinter.py` / `pyi_rth__tkinter.py`。
+  正确姿势（先导出两个变量再打包）：
+  ```bash
+  export TCL_LIBRARY='C:\Users\2504\AppData\Local\Python\pythoncore-3.14-64\tcl\tcl8.6'
+  export TK_LIBRARY='C:\Users\2504\AppData\Local\Python\pythoncore-3.14-64\tcl\tk8.6'
+  pyinstaller VideoLauncher.spec --noconfirm --clean      # 打完体积应回到 ~13.28 MB
+  ```
+  ⚠️ 之前能打出好 exe，是因为 PyInstaller 把 Tcl/Tk 探测结果**缓存在 `%LOCALAPPDATA%\pyinstaller`**，那份缓存是环境还好时留下的；`--clean` 清掉缓存就会重新探测并暴露这个坑。**别依赖缓存，把变量显式写上。**
+  对应的验证：打完跑 `_audit/verify_exe.py`（按窗口标题找 hwnd → 截图 → 量化亮度），能开到窗口才算过。
 
 ## 约定
 
@@ -69,7 +82,9 @@
 ```bash
 python 视频方案启动器.py                                          # 直接运行
 taskkill /F /IM VideoLauncher.exe                                # 打包前清残留（会锁 dist）
-pyinstaller VideoLauncher.spec --noconfirm --clean                # 打包单文件 exe
+export TCL_LIBRARY='C:\Users\2504\AppData\Local\Python\pythoncore-3.14-64\tcl\tcl8.6'   # 必设，否则打出无 tkinter 的坏 exe
+export TK_LIBRARY='C:\Users\2504\AppData\Local\Python\pythoncore-3.14-64\tcl\tk8.6'     # 同上
+pyinstaller VideoLauncher.spec --noconfirm --clean                # 打包单文件 exe（产物应 ~13.28 MB）
 ```
 
 ## 验证纪律（静态 + 运行期 + 渲染三轨）
