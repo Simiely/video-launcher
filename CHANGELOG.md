@@ -2,6 +2,33 @@
 
 本文件记录本项目的版本变更。格式：版本号 + 日期 + 变更分类。
 
+## v1.2.18 · 2026-10-14
+
+**同步部署仓库 v1.8.0 的工作流改名：6 条路径引用 + 画布原件映射全部更新。**
+
+部署仓库 `video-upscale-deploy` 把工作流统一改名成 **`<引擎>-<效果>-<档位>.json`**
+（原来 `FlashVSR-12G-*` / `seedvr2_upscale_*` / `FlashVSR放大工作流-*` 三套命名混用，
+看名字读不出用哪个模型、什么效果），并撤销 `API导出/` 子目录。本版只跟随改名，**不改行为**。
+
+### 变更
+- **`运行时.py` 的 `WORKFLOWS` 六条路径**全部换新名：
+  `FlashVSR/FlashVSR-放大2x-有声素材.json`、`FlashVSR/FlashVSR-放大2x-无音轨素材.json`、
+  `SeedVR2/SeedVR2-放大1080p-标准.json`、`SeedVR2/SeedVR2-放大2160p-4K极致.json`、
+  `MiniMax/MiniMax-H3-文生视频T2V.json`、`MiniMax/MiniMax-H3-图生视频I2V.json`。
+- **`桥接资源.WF_UI_SOURCES`（「加载到画布」用的画布原件名）**同步换新名——
+  ComfyUI 的 `user/default/workflows/` 下 11 份 UI 原件已改成同名同档：
+  `FlashVSR-放大2x-提速.json`、`FlashVSR-放大4x-画质优先.json`、
+  `SeedVR2-放大1080p-标准.json`、`MiniMax-H3-文生视频T2V.json`。
+- **`运行时.cleanup_synced_api` 的 `ours` 集合改成新旧名并集**：v1.2.16 误同步用的是旧名，
+  从任一旧版本升上来都要能清干净，不能只留新名。
+- `桥接资源.py` 两个版本注释（模块头 + `BRIDGE_INIT` 生成物）→ v1.2.18。
+
+### 注意
+- 部署仓库 `workflows/` 里的文件是**运行时从 `deploy_root` 现读的**，所以升级完要确保
+  那边的仓库已拉到 v1.8.0；否则推送会报"找不到图"。
+- 画布原件的文件名变了，`启动器配置.json` 里的 `wf_alias` 键（旧文件名）会全部失配 ——
+  本机那份已按新名重写；别名现在只补文件名装不下的细节（批大小 / 显存开关 / 分辨率上限）。
+
 ## v1.2.17 · 2026-10-12
 
 **「加载到画布」一键直达：经桥接扩展把工作流载入 ComfyUI 画布（只加载、不执行）。**

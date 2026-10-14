@@ -1,11 +1,11 @@
-"""画布加载功能的资源与构造逻辑（v1.2.17）。
+"""画布加载功能的资源与构造逻辑（v1.2.18）。
 
 `运行时` 把这里的函数当作本模块的一部分使用（安装桥接扩展 / 构造 I2V 画布）。
 单独成模块只因运行时.py 的逻辑行预算吃满（>1000 必拆的铁律）；与界面无关，
 只依赖标准库，不 import 业务代码。
 """
 
-BRIDGE_INIT = '''"""视频方案启动器桥接扩展（v1.2.17）。
+BRIDGE_INIT = '''"""视频方案启动器桥接扩展（v1.2.18）。
 
 只做一件事：把启动器发来的「加载到画布」请求转给前端。
 - GET /video_launcher/ping    → 存活探测（启动器用它判断桥是否已生效）
@@ -81,12 +81,12 @@ app.registerExtension({
 # 内置方案 → 画布版 UI 原件（相对 workflows_dir 的文件名）。宁缺毋滥：没有可靠
 # 原件的就给 None，按钮会给出诚实提示，而不是猜一份错图。
 WF_UI_SOURCES = {
-    "fv_2x": "FlashVSR放大工作流-12G-提速版.json",
-    "fv_4x": "FlashVSR放大工作流-12G-画质优先.json",
-    "sv_std": "seedvr2_upscale_1080p_fixed.json",
+    "fv_2x": "FlashVSR-放大2x-提速.json",
+    "fv_4x": "FlashVSR-放大4x-画质优先.json",
+    "sv_std": "SeedVR2-放大1080p-标准.json",
     "sv_max": None,        # 2160 是补绑时改的参数，没有现成 UI 原件
-    "mm_t2v": "MiniMax-H3-T2V-12G-864x480.json",
-    "mm_i2v": "MiniMax-H3-T2V-12G-864x480.json",   # 通用画布，载入时补 LoadImage 接 first_frame
+    "mm_t2v": "MiniMax-H3-文生视频T2V.json",
+    "mm_i2v": "MiniMax-H3-文生视频T2V.json",   # 通用画布，载入时补 LoadImage 接 first_frame
 }
 
 

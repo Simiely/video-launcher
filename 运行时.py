@@ -1122,9 +1122,14 @@ def cleanup_synced_api(cfg):
         entries = sorted(os.listdir(target))
     except OSError as e:
         return False, f"旧同步目录读不了，先留着：{e!r}"
+    # 新旧名并集：v1.2.16 误同步用的是旧名，v1.2.18 起改用「引擎-效果-档位」新名，
+    # 两个版本升级上来都要能清干净。
     ours = {"FlashVSR-12G-无音轨素材.json", "FlashVSR-12G-有声素材.json",
             "MiniMax-H3-I2V.json", "MiniMax-H3-T2V.json",
-            "SeedVR2-12G-1080p.json", "SeedVR2-极致-2160.json"}
+            "SeedVR2-12G-1080p.json", "SeedVR2-极致-2160.json",
+            "FlashVSR-放大2x-无音轨素材.json", "FlashVSR-放大2x-有声素材.json",
+            "MiniMax-H3-图生视频I2V.json", "MiniMax-H3-文生视频T2V.json",
+            "SeedVR2-放大1080p-标准.json", "SeedVR2-放大2160p-4K极致.json"}
     if not set(entries) <= ours:
         return False, ""
     try:
@@ -1187,8 +1192,8 @@ def load_to_comfy(cfg, name, wf_id, data, open_browser=True):
 # api   = 该方案对应的真实 API 图（相对 deploy_root 的路径）；没有就不写，界面会指路。
 # patch = 推之前要覆盖的节点参数（按 class_type 定位）—— 同一份图按方案微调用的。
 FLASHVSR_API = {                       # FlashVSR 两版图只差"有没有连音频线"
-    "audio":  "workflows/FlashVSR/FlashVSR-12G-有声素材.json",
-    "silent": "workflows/FlashVSR/FlashVSR-12G-无音轨素材.json",
+    "audio":  "workflows/FlashVSR/FlashVSR-放大2x-有声素材.json",
+    "silent": "workflows/FlashVSR/FlashVSR-放大2x-无音轨素材.json",
 }
 WORKFLOWS = [
     {"id": "fv_2x", "engine": "flashvsr", "name": "FlashVSR · 通用 2x 放大",
@@ -1204,26 +1209,26 @@ WORKFLOWS = [
      "api": FLASHVSR_API, "patch": {"FlashVSRNode": {"scale": 4}}},
     {"id": "sv_std", "engine": "seedvr2", "name": "SeedVR2 · 标准 1080p",
      "desc": "标准档，短边缩放到 1080，速度与质量平衡。",
-     "api": "workflows/SeedVR2/SeedVR2-12G-1080p.json",
+     "api": "workflows/SeedVR2/SeedVR2-放大1080p-标准.json",
      "steps": [("LoadVideo", "input_dir"), ("SeedVR2 标准档", "tile=512"),
                ("Resize 短边", "1080"), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
     {"id": "sv_max", "engine": "seedvr2", "name": "SeedVR2 · 极致 2160",
      "desc": "极致档，短边冲 2160（4K），显存占用高、最慢。"
              "（SeedVR2 没有「保持原画」参数，短边必须给目标值，故用 2160。）",
-     "api": "workflows/SeedVR2/SeedVR2-极致-2160.json",
+     "api": "workflows/SeedVR2/SeedVR2-放大2160p-4K极致.json",
      "steps": [("LoadVideo", "input_dir"), ("SeedVR2 极致档", "tile=384"),
                ("FaceRestore", "on"), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadVideo", "outN": "1 × SaveVideo"},
     {"id": "mm_t2v", "engine": "minimax", "name": "MiniMax H3 · 文生视频 T2V",
      "desc": "用提示词直接生成视频（Text-to-Video）。",
-     "api": "workflows/MiniMax/MiniMax-H3-T2V.json",
+     "api": "workflows/MiniMax/MiniMax-H3-文生视频T2V.json",
      "steps": [("TextEncode", "prompt"), ("MiniMax H3", "T2V"),
                ("VAEDecode", ""), ("SaveVideo", "output_dir")],
      "inN": "0（纯文本）", "outN": "1 × SaveVideo"},
     {"id": "mm_i2v", "engine": "minimax", "name": "MiniMax H3 · 图生视频 I2V",
      "desc": "以首帧图片驱动生成视频（Image-to-Video）。",
-     "api": "workflows/MiniMax/MiniMax-H3-I2V.json",
+     "api": "workflows/MiniMax/MiniMax-H3-图生视频I2V.json",
      "steps": [("LoadImage", "first_frame"), ("MiniMax H3", "I2V"),
                ("VAEDecode", ""), ("SaveVideo", "output_dir")],
      "inN": "1 × LoadImage", "outN": "1 × SaveVideo"},
